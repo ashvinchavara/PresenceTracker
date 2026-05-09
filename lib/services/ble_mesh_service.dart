@@ -62,6 +62,17 @@ class BleMeshService {
       _startRootAdvertising();
       _startRootScanning();
       
+      // --- DEBUG SIMULATION FOR SINGLE DEVICE TESTING ---
+      // Injects a "Virtual Student" (ID 19 - ashvinchavara@gmail.com) after 10 seconds to test sync logic
+      Timer(const Duration(seconds: 10), () {
+        print('DEBUG: Injecting Virtual Student (ID 19) for testing...');
+        DateTime now = DateTime.now();
+        _rootAggregatedData['19'] = {'first_view': now, 'last_view': now};
+        _syncAggregatedDataToPrefs();
+        NotificationService.showAttendanceStatus(true, "Debug: Ashvin (ID 19) Detected");
+      });
+      // --------------------------------------------------
+
       // Update broadcast payload every 5 seconds
       _leafBroadcastTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
          if (DateTime.now().isBefore(_resumeAdvertisingTime)) {
@@ -166,9 +177,9 @@ class BleMeshService {
       _advIndex = 0;
     }
 
-    // Take next 5 peers
+    // Take next 2 peers (reduced from 5 to fit BLE 31-byte limit)
     List<MapEntry<String, DateTime>> chunk = [];
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 2; i++) {
       if (_advIndex < entries.length) {
         chunk.add(entries[_advIndex]);
         _advIndex++;
@@ -199,7 +210,10 @@ class BleMeshService {
 
     if (completedCycle) {
       _advIndex = 0;
-      _resumeAdvertisingTime = DateTime.now().add(const Duration(minutes: 10));
+      // Shuffle for better distribution in a crowd
+      entries.shuffle();
+      // Reduced sleep from 10 mins to 15 secs for high-density responsiveness
+      _resumeAdvertisingTime = DateTime.now().add(const Duration(seconds: 15));
     }
   }
 

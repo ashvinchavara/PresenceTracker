@@ -1,8 +1,8 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiConfig {
-  /// Local Machine via ADB USB reverse tunnel (adb reverse tcp:3000 tcp:3000)
-  static String baseUrl = 'http://localhost:3000/api';
+  /// Local Machine IP (Auto-detected: 192.168.1.8)
+  static String baseUrl = 'http://192.168.1.8:3000/api';
 
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();

@@ -11,6 +11,8 @@ import '../../services/alarm_service.dart';
 import '../auth/auth_screen.dart';
 import './attendance_history_screen.dart';
 import './full_timetable_screen.dart';
+import '../../services/ble_mesh_service.dart';
+
 
 class RootDashboard extends StatefulWidget {
   const RootDashboard({super.key});
@@ -26,6 +28,12 @@ class _RootDashboardState extends State<RootDashboard> {
   List<Map<String, dynamic>> _upcomingTasks = [];
   String _displayDay = 'Today';
   bool _isLoading = true;
+
+  // --- SIMULATION STATE ---
+  int _simCountdown = 0;
+  String _simStage = ''; // 'waiting', 'active', ''
+  Timer? _simTimer;
+  // -----------------------
 
   bool _isMeshActive = false;
   String _meshTaskId = '';
@@ -44,6 +52,7 @@ class _RootDashboardState extends State<RootDashboard> {
   @override
   void dispose() {
     _uiSyncTimer?.cancel();
+    _simTimer?.cancel();
     super.dispose();
   }
 
@@ -268,7 +277,7 @@ class _RootDashboardState extends State<RootDashboard> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                    const Text("Tracking Presence...", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF0078D4))),
-                   Text(canUpload ? "Tap to view and override live attendance" : "Session is currently active", style: const TextStyle(fontSize: 12)),
+                   Text(_simStage == 'active' ? "Simulation ending in ${_simCountdown}s" : (canUpload ? "Tap to view and override live attendance" : "Session is currently active"), style: const TextStyle(fontSize: 12)),
                 ],
               ),
             ),
@@ -336,6 +345,68 @@ class _RootDashboardState extends State<RootDashboard> {
               },
             ),
             const Spacer(),
+            const Divider(),
+            ListTile(
+              leading: Icon(Icons.bug_report, color: _simStage != '' ? Colors.grey : Colors.orange),
+              title: Text(_simStage == 'waiting' ? 'Simulation Starting in ${_simCountdown}s' : 'Run BLE Simulation'),
+              subtitle: Text(_simStage == 'active' ? 'Simulation Active (ends in ${_simCountdown}s)' : 'Start next session in 1 min'),
+              enabled: _simStage == '',
+              onTap: () {
+                if (_upcomingTasks.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No upcoming tasks to simulate.')));
+                  return;
+                }
+                
+                final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
+                final task = Map<String, dynamic>.from(_upcomingTasks.first);
+                
+                setState(() {
+                  _simStage = 'waiting';
+                  _simCountdown = 60;
+                });
+
+                _simTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+                   if (mounted) {
+                     setState(() {
+                       _simCountdown--;
+                       if (_simCountdown <= 0) {
+                         if (_simStage == 'waiting') {
+                            // Transition to ACTIVE
+                            _simStage = 'active';
+                            _simCountdown = 120; // 2 minutes
+                            
+                            // Trigger BLE Mesh
+                            final BleMeshService bleService = BleMeshService();
+                            bleService.initializeMeshNode(
+                              userProvider.canUpload ? 'root' : 'leaf', 
+                              task['id'].toString(), 
+                              userProvider.currentUserNode!.id, 
+                              task['activity_name'] ?? 'Session'
+                            );
+                         } else {
+                            // Finish Simulation
+                            _simStage = '';
+                            _simCountdown = 0;
+                            timer.cancel();
+                            
+                            // Trigger End and Sync
+                            final BleMeshService bleService = BleMeshService();
+                            bleService.endMeshTask(userProvider.canUpload ? 'root' : 'leaf');
+                         }
+                       }
+                     });
+                   }
+                });
+
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    backgroundColor: Colors.orange,
+                    content: Text('Simulation Started! Look at the dashboard for countdown.'),
+                  )
+                );
+              },
+            ),
             const Divider(),
             ListTile(
               leading: const Icon(Icons.logout, color: Colors.red),
