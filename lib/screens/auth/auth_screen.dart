@@ -22,6 +22,7 @@ class _AuthScreenState extends State<AuthScreen> {
   
   bool _isAuthenticating = false;
   bool _isConnected = false;
+  bool _isDialogShowing = false;
   Timer? _healthCheckTimer;
 
   @override
@@ -39,7 +40,10 @@ class _AuthScreenState extends State<AuthScreen> {
   void _startHealthPolling() {
     // Initial check
     _apiService.checkHealth().then((connected) {
-      if (mounted) setState(() => _isConnected = connected);
+      if (mounted) {
+        setState(() => _isConnected = connected);
+        if (!connected) _showSettingsDialog();
+      }
     });
     
     // Poll every 10 seconds
@@ -47,6 +51,9 @@ class _AuthScreenState extends State<AuthScreen> {
       final connected = await _apiService.checkHealth();
       if (mounted) {
         setState(() => _isConnected = connected);
+        if (!connected && !_isAuthenticating) {
+          _showSettingsDialog();
+        }
       }
     });
   }
@@ -59,6 +66,11 @@ class _AuthScreenState extends State<AuthScreen> {
        ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter both email and password.')),
       );
+      return;
+    }
+
+    if (!_isConnected) {
+      _showSettingsDialog();
       return;
     }
 
@@ -95,6 +107,9 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   void _showSettingsDialog() {
+    if (_isDialogShowing) return;
+    _isDialogShowing = true;
+
     final TextEditingController ipController = TextEditingController(text: ApiConfig.baseUrl.replaceAll('http://', '').replaceAll(':3000/api', ''));
     
     showDialog(
@@ -137,8 +152,8 @@ class _AuthScreenState extends State<AuthScreen> {
             child: const Text('Save'),
           ),
         ],
-      )
-    );
+      ),
+    ).then((_) => _isDialogShowing = false);
   }
 
   @override
@@ -146,13 +161,6 @@ class _AuthScreenState extends State<AuthScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Presence Tracker Login'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: _showSettingsDialog,
-            tooltip: 'Server Settings',
-          ),
-        ],
       ),
       body: Center(
         child: SingleChildScrollView(

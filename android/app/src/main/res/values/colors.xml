@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App icon background: deep navy matching the app's primary color -->
+    <color name="ic_launcher_background">#000</color>
+</resources>

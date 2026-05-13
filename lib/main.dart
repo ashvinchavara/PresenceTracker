@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 import 'providers/node_role_provider.dart';
 import 'providers/theme_provider.dart';
 import 'screens/auth/auth_screen.dart';
-import 'services/alarm_service.dart';
-import 'services/notification_service.dart';
 import 'core/api_config.dart';
 
 import 'screens/dashboard/root_dashboard.dart';
@@ -13,8 +12,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   // Initialize services
-  await AlarmService.initialize();
-  await NotificationService.initialize();
+  await AndroidAlarmManager.initialize();
   await ApiConfig.init();
   
   // Initialize session
@@ -50,9 +48,12 @@ class PresenceTrackerApp extends StatelessWidget {
         useMaterial3: true,
       ),
       darkTheme: ThemeData.dark(useMaterial3: true).copyWith(
+        scaffoldBackgroundColor: Colors.black,
+        canvasColor: Colors.black,
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF0078D4), 
           brightness: Brightness.dark,
+          surface: Colors.black,
         ),
       ),
       home: userNode == null ? const AuthScreen() : const RootDashboard(),

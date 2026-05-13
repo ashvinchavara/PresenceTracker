@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/user_node.dart';
-import '../models/attendance_record.dart';
 import '../core/api_config.dart';
 
 class ApiService {
@@ -121,6 +120,24 @@ class ApiService {
       }
     } catch (e) {
       print('Error fetching attendance history: $e');
+    }
+    return [];
+  }
+
+  /// Fetch per-activity attendance summary for a user.
+  /// Returns list with: timetable_id, activity_name, time_range,
+  ///   total_sessions, user_present, all_dates (List<String>), present_dates (List<String>)
+  Future<List<Map<String, dynamic>>> fetchAttendanceSummary(String userId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/attendance_summary/$userId'),
+      );
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        return data.cast<Map<String, dynamic>>();
+      }
+    } catch (e) {
+      print('Error fetching attendance summary: $e');
     }
     return [];
   }

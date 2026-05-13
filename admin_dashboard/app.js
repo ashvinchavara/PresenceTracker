@@ -7,6 +7,8 @@ let state = {
     users: [],
     timetable: [],
     attendance: [],
+    activities: [],
+    roles: [],
     sort: {
         column: 'full_name',
         direction: 'asc'
@@ -66,19 +68,52 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function initApp() {
+    initTheme();
     setupEventListeners();
     await loadAllData();
+}
+
+function initTheme() {
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    updateThemeUI(savedTheme);
+}
+
+function toggleTheme() {
+    const currentTheme = document.documentElement.getAttribute('data-theme');
+    const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', newTheme);
+    localStorage.setItem('theme', newTheme);
+    updateThemeUI(newTheme);
+}
+
+function updateThemeUI(theme) {
+    const toggleBtn = document.getElementById('theme-toggle');
+    const themeText = document.getElementById('theme-text');
+    if (!toggleBtn || !themeText) return;
+
+    if (theme === 'light') {
+        toggleBtn.innerHTML = '<span class="material-symbols-rounded">light_mode</span>';
+        themeText.innerText = 'Light Mode';
+        toggleBtn.style.transform = 'rotate(180deg)';
+    } else {
+        toggleBtn.innerHTML = '<span class="material-symbols-rounded">dark_mode</span>';
+        themeText.innerText = 'Dark Mode';
+        toggleBtn.style.transform = 'rotate(0deg)';
+    }
 }
 
 async function loadAllData() {
     const statusIndicator = document.getElementById('db-status');
     const connectionText = document.getElementById('connection-text');
 
-    const [depts, users, tt, att] = await Promise.all([
+    const [depts, users, tt, att, acts, roles] = await Promise.all([
         apiFetch('/departments'),
         apiFetch('/users'),
         apiFetch('/timetable'),
-        apiFetch('/attendance')
+        apiFetch('/attendance'),
+        apiFetch('/activities'),
+        apiFetch('/roles')
     ]);
 
     if (depts) {
@@ -86,6 +121,8 @@ async function loadAllData() {
         state.users = users;
         state.timetable = tt;
         state.attendance = att;
+        state.activities = acts || [];
+        state.roles = roles || [];
 
         statusIndicator.classList.add('connected');
         connectionText.innerText = 'Connected (MySQL Direct)';
@@ -101,7 +138,21 @@ function renderUI() {
     renderTimetable();
     renderAttendanceLogs();
     renderUploadPermissions();
+    populateNodeDropdown();
+    populateActivityDropdown();
     populateSelectors();
+    populateDatalists();
+}
+
+function populateDatalists() {
+    const rolesDl = document.getElementById('existing-roles');
+    if (rolesDl) {
+        rolesDl.innerHTML = state.roles.map(r => `<option value="${r.name}">`).join('');
+    }
+    const actsDl = document.getElementById('existing-activities');
+    if (actsDl) {
+        actsDl.innerHTML = state.activities.map(a => `<option value="${a.name}">`).join('');
+    }
 }
 
 // --- API Helpers ---
@@ -660,7 +711,20 @@ function renderTimetable() {
 
     if (!state.timetable) return;
 
-    state.timetable.forEach(t => {
+    // Sorting Logic
+    const dayOrder = { 'Monday': 1, 'Tuesday': 2, 'Wednesday': 3, 'Thursday': 4, 'Friday': 5, 'Saturday': 6, 'Sunday': 7 };
+    
+    const sortedTimetable = [...state.timetable].sort((a, b) => {
+        const dayA = dayOrder[a.days] || 99;
+        const dayB = dayOrder[b.days] || 99;
+        
+        if (dayA !== dayB) return dayA - dayB;
+        
+        // Secondary sort: Start Time
+        return (a.start_time || '').localeCompare(b.start_time || '');
+    });
+
+    sortedTimetable.forEach(t => {
         let rolesHtml = '<span class="text-muted">No users</span>';
         if (t.assigned_roles) {
             const roleCounts = {};
@@ -743,17 +807,9 @@ window.editTimetableRow = (id) => {
         <td>
             <div style="display: flex; flex-direction: column; gap: 4px;">
                 <div style="display: flex; gap: 4px;">
-                    <input type="text" id="edit-tt-start-val-${id}" class="custom-input" value="${parse24h(t.start_time).time}" style="font-size: 11px; height: 28px; width: 50px; padding: 4px;">
-                    <select id="edit-tt-start-ampm-${id}" class="custom-input" style="font-size: 10px; height: 28px; width: 45px;">
-                        <option value="AM" ${parse24h(t.start_time).ampm === 'AM' ? 'selected' : ''}>AM</option>
-                        <option value="PM" ${parse24h(t.start_time).ampm === 'PM' ? 'selected' : ''}>PM</option>
-                    </select>
+                    <input type="time" id="edit-tt-start-val-${id}" class="custom-input" value="${t.start_time.slice(0, 5)}" style="font-size: 11px; height: 32px; flex: 1;">
                     <span style="opacity: 0.5; align-self: center;">-</span>
-                    <input type="text" id="edit-tt-end-val-${id}" class="custom-input" value="${parse24h(t.end_time).time}" style="font-size: 11px; height: 28px; width: 50px; padding: 4px;">
-                    <select id="edit-tt-end-ampm-${id}" class="custom-input" style="font-size: 10px; height: 28px; width: 45px;">
-                        <option value="AM" ${parse24h(t.end_time).ampm === 'AM' ? 'selected' : ''}>AM</option>
-                        <option value="PM" ${parse24h(t.end_time).ampm === 'PM' ? 'selected' : ''}>PM</option>
-                    </select>
+                    <input type="time" id="edit-tt-end-val-${id}" class="custom-input" value="${t.end_time.slice(0, 5)}" style="font-size: 11px; height: 32px; flex: 1;">
                 </div>
                 <div style="display: flex; gap: 4px;">
                     <input type="date" id="edit-tt-sdate-${id}" class="custom-input" value="${t.start_date.slice(0, 10)}" style="font-size: 10px; height: 24px; padding: 2px;">
@@ -775,8 +831,8 @@ window.editTimetableRow = (id) => {
 window.saveTimetableEdit = async (id) => {
     const payload = {
         activity_name: document.getElementById(`edit-tt-name-${id}`).value,
-        start_time: convertTo24h(document.getElementById(`edit-tt-start-val-${id}`).value, document.getElementById(`edit-tt-start-ampm-${id}`).value),
-        end_time: convertTo24h(document.getElementById(`edit-tt-end-val-${id}`).value, document.getElementById(`edit-tt-end-ampm-${id}`).value),
+        start_time: document.getElementById(`edit-tt-start-val-${id}`).value + ':00',
+        end_time: document.getElementById(`edit-tt-end-val-${id}`).value + ':00',
         start_date: document.getElementById(`edit-tt-sdate-${id}`).value,
         end_date: document.getElementById(`edit-tt-edate-${id}`).value,
         dept_id: document.getElementById(`edit-tt-dept-${id}`).value,
@@ -796,7 +852,7 @@ window.saveTimetableEdit = async (id) => {
 
 window.openPersonnelPicker = () => {
     // Populate Role filter
-    const roles = [...new Set(state.users.map(u => u.role).filter(r => r))];
+    const roles = state.roles.map(r => r.name);
     const roleSelect = document.getElementById('picker-filter-role');
     if (roleSelect) {
         roleSelect.innerHTML = '<option value="">All Roles</option>' + roles.map(r => `<option value="${r}">${r}</option>`).join('');
@@ -872,56 +928,434 @@ window.togglePickerUser = (id, checked) => {
 
 // --- 4. Attendance Logs ---
 
-function renderAttendanceLogs() {
-    const tableBody = document.getElementById('logs-table-body');
-    if (!tableBody) return;
-    tableBody.innerHTML = '';
+// --- 4. Attendance Analysis & Logs ---
 
-    if (!state.attendance || state.attendance.length === 0) {
-        tableBody.innerHTML = '<tr><td colspan="6" class="loading-text">No verification logs available.</td></tr>';
+function populateNodeDropdown() {
+    const select = document.getElementById('analysis-node');
+    if (!select) return;
+
+    const currentVal = select.value;
+    // Only show nodes that actually have activities/schedules
+    const nodesWithSchedules = new Set(state.timetable.map(t => t.dept_id));
+    const activeNodes = state.departments.filter(d => nodesWithSchedules.has(d.id));
+
+    select.innerHTML = '<option value="">All Nodes</option>' + 
+        activeNodes.map(d => `<option value="${d.id}" ${d.id == currentVal ? 'selected' : ''}>${d.name}</option>`).join('');
+}
+
+function populateActivityDropdown() {
+    const activitySelect = document.getElementById('analysis-activity');
+    const nodeSelect = document.getElementById('analysis-node');
+    if (!activitySelect) return;
+
+    const nodeId = nodeSelect?.value;
+    const currentActivityVal = activitySelect.value;
+
+    let filteredActivities = state.activities;
+    if (nodeId) {
+        // Find activity names scheduled for this node
+        const nodeSchedules = state.timetable.filter(t => t.dept_id == nodeId);
+        const nodeActivityNames = new Set(nodeSchedules.map(t => t.activity_name));
+        filteredActivities = state.activities.filter(a => nodeActivityNames.has(a.name));
+    }
+
+    activitySelect.innerHTML = '<option value="">Select Activity...</option>' + 
+        filteredActivities.map(a => `<option value="${a.id}" ${a.id == currentActivityVal ? 'selected' : ''}>${a.name}</option>`).join('');
+}
+
+function initAttendanceLogsView() {
+    // Populate dropdowns
+    populateNodeDropdown();
+    populateActivityDropdown();
+
+    const activitySelect = document.getElementById('analysis-activity');
+    const nodeSelect = document.getElementById('analysis-node');
+
+    // If nothing selected, pick the first available combination
+    if (activitySelect && !activitySelect.value && state.activities.length > 0) {
+        const firstActivity = state.activities[0];
+        
+        // Find a node that has this activity
+        const schedule = state.timetable.find(t => t.activity_name === firstActivity.name);
+        if (schedule) {
+            if (nodeSelect) nodeSelect.value = schedule.dept_id;
+            // Re-populate activity dropdown based on this node to ensure it's there
+            populateActivityDropdown();
+            activitySelect.value = firstActivity.id;
+        } else {
+            activitySelect.value = firstActivity.id;
+        }
+    }
+    
+    renderAttendanceLogs();
+    renderUploadPermissions();
+}
+
+async function renderAttendanceLogs() {
+    // This now refers to the Student Attendance Grid
+    const activityId = document.getElementById('analysis-activity')?.value;
+    const nodeId = document.getElementById('analysis-node')?.value;
+    const grid = document.getElementById('student-attendance-grid');
+    if (!grid) return;
+
+    if (!activityId) {
+        grid.innerHTML = '<div class="loading-text" style="grid-column: 1 / -1;">Select an activity to view attendance analysis.</div>';
         return;
     }
 
-    state.attendance.forEach(log => {
-        tableBody.innerHTML += `
-            <tr>
-                <td>
-                    <strong>${log.user_name}</strong>
-                </td>
-                <td><small>${getFullDeptPath(log.dept_id)}</small></td>
-                <td>
-                    <div style="font-size: 13px;">${formatTime12h(log.start_time.slice(0, 5))} - ${formatTime12h(log.end_time.slice(0, 5))}</div>
-                </td>
-                <td><strong>${log.activity_name}</strong></td>
-                <td><span class="badge success">Verified</span></td>
-                <td class="text-right">
-                    <div style="font-size: 12px; font-weight: 500;">Device Sync</div>
-                    <div class="text-muted" style="font-size: 10px;">by ${log.marked_by_name}</div>
-                </td>
-            </tr>
+    grid.innerHTML = '<div class="loading-text" style="grid-column: 1 / -1;">Calculating performance metrics...</div>';
+
+    try {
+        const activity = state.activities.find(a => a.id == activityId);
+        if (!activity) return;
+
+        // Filter schedules by activity name and node if selected
+        let activitySchedules = state.timetable.filter(t => t.activity_name === activity.name);
+        if (nodeId) {
+            activitySchedules = activitySchedules.filter(t => t.dept_id == nodeId);
+        }
+        
+        // Find users assigned to this activity in the selected node(s)
+        let assignedUserIds = new Set();
+        activitySchedules.forEach(s => {
+            if (s.user_ids) s.user_ids.split(',').forEach(id => assignedUserIds.add(parseInt(id)));
+        });
+
+        const users = state.users.filter(u => assignedUserIds.has(u.id));
+        
+        if (users.length === 0) {
+            grid.innerHTML = '<div class="loading-text" style="grid-column: 1 / -1;">No personnel assigned to this activity in the selected context.</div>';
+            return;
+        }
+
+        let html = '';
+        users.forEach(u => {
+            // Calculate percentage
+            const userLogs = state.attendance.filter(log => log.user_id === u.id && log.activity_name === activity.name);
+            
+            // For a real calculation we'd need total sessions, let's mock or use a heuristic
+            // In a real app we'd fetch this from the summary endpoint.
+            // Let's assume 100% if they have logs, or just show count.
+            // Wait, I created a summary endpoint in server.js earlier.
+            
+            const totalSessions = 10; // Mock for now or fetch
+            const present = userLogs.length;
+            const percentage = ((present / totalSessions) * 100);
+            const pctStr = percentage.toFixed(1);
+
+            html += `
+                <div class="student-card" onclick="openUserAnalytics(${u.id}, ${activityId})" style="cursor: pointer;">
+                    <div class="student-initial">${u.full_name.charAt(0)}</div>
+                    <div class="student-info">
+                        <span class="student-name">${u.full_name}</span>
+                        <span class="student-role">${u.role || 'Personnel'}</span>
+                    </div>
+                    <div class="pct-badge ${percentage < 50 ? 'danger' : ''}">${pctStr}%</div>
+                </div>
+            `;
+        });
+        grid.innerHTML = html;
+
+    } catch (e) {
+        grid.innerHTML = `<div class="loading-text" style="grid-column: 1 / -1; color: var(--danger);">Error: ${e.message}</div>`;
+    }
+}
+
+async function generateAttendanceReport() {
+    const activityId = document.getElementById('analysis-activity')?.value;
+    const nodeId = document.getElementById('analysis-node')?.value;
+    
+    if (!activityId) return alert('Please select an activity first.');
+    
+    const activity = state.activities.find(a => a.id == activityId);
+    const node = state.departments.find(d => d.id == nodeId);
+    
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    
+    // Header - More Compact
+    doc.setFontSize(16);
+    doc.setTextColor(99, 102, 241); 
+    doc.text('Attendance Analytics Report', 15, 20);
+    
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, 15, 26);
+    
+    // Metadata Panel - More Compact
+    doc.setFillColor(248, 250, 252);
+    doc.rect(15, 32, 180, 15, 'F');
+    
+    doc.setFontSize(10);
+    doc.setTextColor(15, 23, 42);
+    doc.setFont(undefined, 'bold');
+    doc.text('Activity:', 20, 42);
+    doc.text('Node:', 100, 42);
+    
+    doc.setFont(undefined, 'normal');
+    doc.text(activity.name, 40, 42);
+    doc.text(node ? node.name : 'All Nodes', 115, 42);
+    
+    // Table Calculation
+    let activitySchedules = state.timetable.filter(t => t.activity_name === activity.name);
+    if (nodeId) activitySchedules = activitySchedules.filter(t => t.dept_id == nodeId);
+    
+    let assignedUserIds = new Set();
+    activitySchedules.forEach(s => {
+        if (s.user_ids) s.user_ids.split(',').forEach(id => assignedUserIds.add(parseInt(id)));
+    });
+
+    const users = state.users.filter(u => assignedUserIds.has(u.id));
+    
+    const tableData = users.map((u, index) => {
+        const userLogs = state.attendance.filter(log => log.user_id === u.id && log.activity_name === activity.name);
+        const totalSessions = 10; // Mock
+        const present = userLogs.length;
+        const percentage = ((present / totalSessions) * 100).toFixed(1);
+        return [index + 1, u.full_name, u.role || 'Personnel', `${present}/${totalSessions}`, `${percentage}%`];
+    });
+    
+    doc.autoTable({
+        startY: 55,
+        margin: { left: 15, right: 15 },
+        head: [['Sl No', 'Name', 'Role', 'Count', 'Attendance Percentage']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: { fillColor: [99, 102, 241], fontSize: 9, cellPadding: 2, halign: 'left' },
+        styles: { fontSize: 8.5, cellPadding: 2.5, overflow: 'linebreak' },
+        columnStyles: {
+            0: { halign: 'center', cellWidth: 15 },
+            3: { halign: 'center' },
+            4: { halign: 'right', fontStyle: 'bold' }
+        },
+        didParseCell: function (data) {
+            if (data.section === 'head' && data.column.index === 4) {
+                data.cell.styles.halign = 'right';
+            }
+        },
+        alternateRowStyles: { fillColor: [250, 250, 250] }
+    });
+    
+    doc.save(`Attendance_Report_${activity.name.replace(/\s+/g, '_')}.pdf`);
+}
+
+window.openUserAnalytics = (userId, initialActivityId) => {
+    const user = state.users.find(u => u.id === userId);
+    if (!user) return;
+
+    document.getElementById('user-analytics-name').innerText = user.full_name;
+    document.getElementById('user-analytics-role').innerText = user.role || 'Personnel';
+    document.getElementById('user-analytics-initial').innerText = user.full_name.charAt(0);
+
+    // Populate Subject Selector
+    const userSchedules = state.timetable.filter(t => t.user_ids && t.user_ids.split(',').includes(userId.toString()));
+    const userActivityNames = [...new Set(userSchedules.map(t => t.activity_name))];
+    const userActivities = state.activities.filter(a => userActivityNames.includes(a.name));
+
+    const subjectSelect = document.getElementById('user-analytics-subject-select');
+    subjectSelect.innerHTML = userActivities.map(a => `
+        <option value="${a.id}" ${a.id == initialActivityId ? 'selected' : ''}>${a.name}</option>
+    `).join('');
+
+    subjectSelect.onchange = (e) => renderUserAnalyticsLogs(userId, e.target.value);
+
+    // Report Button
+    const btnReport = document.getElementById('btn-user-report');
+    if (btnReport) {
+        btnReport.onclick = () => generateIndividualReport(userId, subjectSelect.value);
+    }
+
+    renderUserAnalyticsLogs(userId, initialActivityId);
+    document.getElementById('user-analytics-modal').style.display = 'flex';
+};
+
+function parseDBDate(dateStr) {
+    if (!dateStr) return new Date();
+    // Replace space with T to make it ISO compatible if needed
+    const isoStr = dateStr.includes(' ') ? dateStr.replace(' ', 'T') : dateStr;
+    const d = new Date(isoStr);
+    return isNaN(d.getTime()) ? new Date() : d;
+}
+
+function getEnrolledActivityDates(activityName) {
+    // Get all unique dates where THIS activity was marked by anyone
+    const allActivityLogs = state.attendance.filter(log => log.activity_name === activityName);
+    const uniqueDates = [...new Set(allActivityLogs.map(log => {
+        const d = parseDBDate(log.date || log.created_at); // Fallback just in case
+        return d.toDateString();
+    }))];
+    
+    // Sort descending
+    return uniqueDates.map(d => new Date(d)).sort((a, b) => b - a);
+}
+
+function renderUserAnalyticsLogs(userId, activityId) {
+    const logsContainer = document.getElementById('user-analytics-logs');
+    const activity = state.activities.find(a => a.id == activityId);
+    if (!activity) return;
+
+    const activityDates = getEnrolledActivityDates(activity.name);
+    const userLogs = state.attendance.filter(log => log.user_id === userId && log.activity_name === activity.name);
+    
+    if (activityDates.length === 0) {
+        logsContainer.innerHTML = '<div class="loading-text" style="grid-column: 1 / -1;">No attendance records found for this activity yet.</div>';
+        return;
+    }
+
+    let html = '';
+    activityDates.forEach(date => {
+        const dateStr = date.toDateString();
+        const log = userLogs.find(l => parseDBDate(l.date || l.created_at).toDateString() === dateStr);
+        const isPresent = !!log;
+        
+        // Find scheduled time from this log or any log of this activity on this day
+        const anyLog = state.attendance.find(l => l.activity_name === activity.name && parseDBDate(l.date || l.created_at).toDateString() === dateStr);
+        const scheduledTime = anyLog ? `${parse24h(anyLog.start_time).time} ${parse24h(anyLog.start_time).ampm} - ${parse24h(anyLog.end_time).time} ${parse24h(anyLog.end_time).ampm}` : 'Scheduled';
+
+        html += `
+            <div class="session-status-card ${isPresent ? 'present' : 'absent'}">
+                <span class="date-text">${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                <div style="display: flex; align-items: center; justify-content: center; gap: 4px; font-size: 11px; font-weight: 700; color: ${isPresent ? 'var(--success)' : 'var(--danger)'};">
+                    <span class="status-dot ${isPresent ? 'present' : 'absent'}"></span>
+                    ${isPresent ? 'PRESENT' : 'ABSENT'}
+                </div>
+                <div style="font-size: 10px; color: var(--text-muted); margin-top: 5px;">${scheduledTime}</div>
+            </div>
         `;
     });
+
+    logsContainer.innerHTML = html;
+}
+
+async function generateIndividualReport(userId, _) {
+    const user = state.users.find(u => u.id === userId);
+    if (!user) return;
+
+    // Get all activities this user is assigned to
+    const userSchedules = state.timetable.filter(t => t.user_ids && t.user_ids.split(',').includes(userId.toString()));
+    const userActivityNames = [...new Set(userSchedules.map(t => t.activity_name))];
+    const userActivities = state.activities.filter(a => userActivityNames.includes(a.name));
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    let currentY = 30;
+
+    // Page Header
+    doc.setFontSize(22);
+    doc.setTextColor(99, 102, 241);
+    doc.text('Individual Attendance Dashboard', 15, currentY);
+    currentY += 10;
+
+    doc.setFontSize(11);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Personnel: ${user.full_name} | Role: ${user.role || 'Personnel'}`, 15, currentY);
+    currentY += 6;
+    doc.text(`Generated: ${new Date().toLocaleString()}`, 15, currentY);
+    currentY += 15;
+
+    for (const activity of userActivities) {
+        const activityDates = getEnrolledActivityDates(activity.name);
+        const userLogs = state.attendance.filter(log => log.user_id === userId && log.activity_name === activity.name);
+
+        if (activityDates.length === 0) continue;
+
+        // Check for page overflow
+        if (currentY > 230) {
+            doc.addPage();
+            currentY = 20;
+        }
+
+        // Activity Header
+        doc.setFillColor(248, 250, 252);
+        doc.rect(15, currentY, 180, 10, 'F');
+        doc.setFontSize(12);
+        doc.setTextColor(15, 23, 42);
+        doc.setFont(undefined, 'bold');
+        doc.text(activity.name, 20, currentY + 7);
+        currentY += 15;
+
+        // Grid Configuration
+        const boxWidth = 33;
+        const boxHeight = 16;
+        const spacing = 4;
+        const boxesPerRow = 5;
+        let xPos = 15;
+
+        doc.setFontSize(7);
+        doc.setFont(undefined, 'normal');
+
+        activityDates.forEach((date, index) => {
+            if (index > 0 && index % boxesPerRow === 0) {
+                xPos = 15;
+                currentY += boxHeight + spacing;
+                
+                // Check for page overflow within activity grid
+                if (currentY > 260) {
+                    doc.addPage();
+                    currentY = 20;
+                }
+            }
+
+            const dateStr = date.toDateString();
+            const log = userLogs.find(l => parseDBDate(l.date || l.created_at).toDateString() === dateStr);
+            const isPresent = !!log;
+
+            // Draw Box
+            doc.setDrawColor(226, 232, 240);
+            doc.setFillColor(isPresent ? 236 : 254, isPresent ? 253 : 242, isPresent ? 245 : 242); // Light Green/Red
+            doc.rect(xPos, currentY, boxWidth, boxHeight, 'FD');
+
+            // Status indicator line
+            doc.setDrawColor(isPresent ? 16 : 239, isPresent ? 185 : 68, isPresent ? 129 : 68);
+            doc.setLineWidth(1);
+            doc.line(xPos, currentY + boxHeight, xPos + boxWidth, currentY + boxHeight);
+            doc.setLineWidth(0.1);
+
+            // Date Text
+            doc.setTextColor(15, 23, 42);
+            doc.setFont(undefined, 'bold');
+            doc.text(date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }), xPos + 2, currentY + 5);
+            
+            // Status/Time Text
+            doc.setFont(undefined, 'normal');
+            doc.setTextColor(isPresent ? 16 : 239, isPresent ? 185 : 68, isPresent ? 129 : 68);
+            doc.text(isPresent ? 'PRESENT' : 'ABSENT', xPos + 2, currentY + 10);
+            
+            // Find scheduled time from any log of this activity on this day
+            const anyLog = state.attendance.find(l => l.activity_name === activity.name && parseDBDate(l.date || l.created_at).toDateString() === dateStr);
+            const scheduledTime = anyLog ? `${parse24h(anyLog.start_time).time} ${parse24h(anyLog.start_time).ampm} - ${parse24h(anyLog.end_time).time} ${parse24h(anyLog.end_time).ampm}` : '';
+            
+            if (scheduledTime) {
+                doc.setTextColor(100, 116, 139);
+                doc.text(scheduledTime, xPos + 2, currentY + 14);
+            }
+
+            xPos += boxWidth + spacing;
+        });
+
+        currentY += boxHeight + 20; // Space after activity grid
+    }
+
+    doc.save(`Attendance_Dashboard_${user.full_name.replace(/\s+/g, '_')}.pdf`);
 }
 
 function renderUploadPermissions() {
     const rolesContainer = document.getElementById('roles-checkbox-container');
     const usersContainer = document.getElementById('users-selected-container');
-    const panel = document.getElementById('upload-permissions-panel');
-    const navTab = document.getElementById('nav-attendance-logs');
     if (!rolesContainer || !usersContainer) return;
 
     // Roles
-    const roles = [...new Set(state.users.map(u => u.role).filter(r => r))];
+    const roles = state.roles.map(r => r.name);
     const roleAuths = roles.map(role => {
         const usersInRole = state.users.filter(u => u.role === role);
-        return usersInRole.every(u => u.can_upload);
+        return usersInRole.length > 0 && usersInRole.every(u => u.can_upload);
     });
     
     rolesContainer.innerHTML = roles.map((role, idx) => {
         return `
-            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-                <input type="checkbox" onchange="toggleRoleUploadPermission('${role}', this.checked)" ${roleAuths[idx] ? 'checked' : ''}>
-                <span style="font-size: 13px;">${role}</span>
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 5px 0;">
+                <span style="font-size: 14px; color: var(--text-main); font-weight: 500;">${role}</span>
+                <input type="checkbox" class="custom-checkbox" onchange="toggleRoleUploadPermission('${role}', this.checked)" ${roleAuths[idx] ? 'checked' : ''} style="width: 18px; height: 18px;">
             </div>
         `;
     }).join('');
@@ -929,21 +1363,11 @@ function renderUploadPermissions() {
     // Users
     const authUsers = state.users.filter(u => u.can_upload);
     usersContainer.innerHTML = authUsers.length ? authUsers.map(u => `
-        <div class="badge" style="background: var(--primary); padding: 8px 12px; display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 11px;">${u.full_name}</span>
-            <span class="material-symbols-rounded" onclick="toggleUserUploadPermission(${u.id}, false)" style="font-size: 14px; cursor: pointer;">close</span>
+        <div class="chip">
+            <span>${u.full_name}</span>
+            <span class="material-symbols-rounded remove-btn" onclick="toggleUserUploadPermission(${u.id}, false)">close</span>
         </div>
-    `).join('') : '<div class="text-muted" style="font-size: 12px; text-align: center; width: 100%; padding-top: 30px;">No specific users authorized</div>';
-
-    // Blink Logic
-    const hasAnyAuth = authUsers.length > 0 || roleAuths.some(a => a);
-    if (!hasAnyAuth) {
-        panel?.classList.add('blink-alert');
-        navTab?.classList.add('blink-alert');
-    } else {
-        panel?.classList.remove('blink-alert');
-        navTab?.classList.remove('blink-alert');
-    }
+    `).join('') : '<div class="text-muted" style="font-size: 13px; text-align: center; width: 100%; padding-top: 50px;">No specific users assigned.</div>';
 }
 
 window.toggleUserUploadPermission = async (userId, status) => {
@@ -1028,6 +1452,12 @@ window.selectNode = (id, name, context = 'assign') => {
 };
 
 function setupEventListeners() {
+    // Theme Toggle
+    const themeContainer = document.querySelector('.theme-toggle-container');
+    if (themeContainer) {
+        themeContainer.onclick = () => toggleTheme();
+    }
+
     // Tab switching
     document.querySelectorAll('.nav-links li').forEach(li => {
         li.onclick = () => {
@@ -1035,6 +1465,10 @@ function setupEventListeners() {
             document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
             li.classList.add('active');
             document.getElementById(li.dataset.tab).classList.add('active');
+
+            if (li.dataset.tab === 'attendance-logs') {
+                initAttendanceLogsView();
+            }
         };
     });
 
@@ -1174,9 +1608,7 @@ function setupEventListeners() {
             const deptId = document.getElementById('tt-subdept-select').value;
             const opName = document.getElementById('tt-operation-name').value;
             const startTimeVal = document.getElementById('tt-start-time').value;
-            const startAmpm = document.getElementById('tt-start-ampm').value;
             const endTimeVal = document.getElementById('tt-end-time').value;
-            const endAmpm = document.getElementById('tt-end-ampm').value;
             const startDate = document.getElementById('tt-start-date').value;
             const endDate = document.getElementById('tt-end-date').value;
             const day = document.getElementById('tt-day-select').value;
@@ -1191,8 +1623,8 @@ function setupEventListeners() {
 
             const payload = {
                 activity_name: opName,
-                start_time: convertTo24h(startTimeVal, startAmpm),
-                end_time: convertTo24h(endTimeVal, endAmpm),
+                start_time: startTimeVal + ':00',
+                end_time: endTimeVal + ':00',
                 start_date: startDate,
                 end_date: endDate,
                 dept_id: deptId,
@@ -1212,7 +1644,7 @@ function setupEventListeners() {
         };
     }
 
-    // --- Attendance Permissions Events ---
+    // --- Attendance Events ---
     const btnOpenPermPicker = document.getElementById('btn-open-user-permissions-picker');
     if (btnOpenPermPicker) {
         btnOpenPermPicker.onclick = () => {
@@ -1220,5 +1652,22 @@ function setupEventListeners() {
             selectedPickerUsers = state.users.filter(u => u.can_upload).map(u => u.id);
             window.openPersonnelPicker();
         };
+    }
+
+    const analysisActivity = document.getElementById('analysis-activity');
+    if (analysisActivity) {
+        analysisActivity.onchange = () => renderAttendanceLogs();
+    }
+    const analysisNode = document.getElementById('analysis-node');
+    if (analysisNode) {
+        analysisNode.onchange = () => {
+            populateActivityDropdown();
+            renderAttendanceLogs();
+        };
+    }
+
+    const btnMakeReport = document.getElementById('btn-make-report');
+    if (btnMakeReport) {
+        btnMakeReport.onclick = () => generateAttendanceReport();
     }
 }

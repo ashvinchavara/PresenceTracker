@@ -7,11 +7,13 @@ import 'package:provider/provider.dart';
 import '../../providers/node_role_provider.dart';
 import '../../providers/theme_provider.dart';
 import '../../services/api_service.dart';
-import '../../services/alarm_service.dart';
+import '../../services/api_service.dart';
 import '../auth/auth_screen.dart';
 import './attendance_history_screen.dart';
 import './full_timetable_screen.dart';
 import '../../services/ble_mesh_service.dart';
+import '../../services/session_automation_service.dart';
+import '../../core/api_config.dart';
 
 
 class RootDashboard extends StatefulWidget {
@@ -40,10 +42,17 @@ class _RootDashboardState extends State<RootDashboard> {
   Map<String, Map<String, int>> _rootAggregatedData = {};
   Timer? _uiSyncTimer;
 
+  bool _isConnected = false;
+  bool _isDialogShowing = false;
+  Timer? _healthCheckTimer;
+  Map<String, dynamic>? _currentAlarm;
+  final SessionAutomationService _automationService = SessionAutomationService();
+
   @override
   void initState() {
     super.initState();
     _fetchDashboardData();
+    _startHealthPolling();
     _uiSyncTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       _loadMeshState();
     });
@@ -53,6 +62,7 @@ class _RootDashboardState extends State<RootDashboard> {
   void dispose() {
     _uiSyncTimer?.cancel();
     _simTimer?.cancel();
+    _healthCheckTimer?.cancel();
     super.dispose();
   }
 
@@ -75,13 +85,20 @@ class _RootDashboardState extends State<RootDashboard> {
         });
       } catch (e) {}
     }
+
+    Map<String, dynamic>? alarm = await _automationService.getActiveAlarm();
     
     if (mounted) {
       setState(() {
         _isMeshActive = active;
         _meshTaskId = tId;
         _rootAggregatedData = aggData;
+        _currentAlarm = alarm;
       });
+      
+      if (alarm != null && alarm['notified'] == false) {
+        _showAlarmPopup(alarm);
+      }
     }
   }
 
@@ -93,9 +110,6 @@ class _RootDashboardState extends State<RootDashboard> {
       final percentage = await _apiService.fetchDashboardStats(userId);
       final tasks = await _apiService.fetchUserTimetable(userId);
 
-      if (userProvider.currentUserNode != null) {
-        AlarmService.scheduleTaskAlarms(tasks, userProvider.currentUserNode!, userProvider.canUpload);
-      }
 
       if (mounted) {
         setState(() {
@@ -103,6 +117,17 @@ class _RootDashboardState extends State<RootDashboard> {
           _processUpcomingTasks(tasks);
           _isLoading = false;
         });
+
+        // Automation
+        if (userProvider.currentUserNode != null) {
+          await _automationService.scheduleNextSessionIfNeeded(
+            tasks, 
+            userProvider.currentUserNode!.id, 
+            userProvider.canUpload
+          );
+          // Refresh state
+          _loadMeshState();
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -111,6 +136,108 @@ class _RootDashboardState extends State<RootDashboard> {
         });
       }
     }
+  }
+
+  void _startHealthPolling() {
+    // Initial check
+    _apiService.checkHealth().then((connected) {
+      if (mounted) {
+        setState(() => _isConnected = connected);
+        if (!connected) _showSettingsDialog();
+      }
+    });
+    
+    // Poll every 10 seconds
+    _healthCheckTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
+      final connected = await _apiService.checkHealth();
+      if (mounted) {
+        setState(() => _isConnected = connected);
+        if (!connected && !_isDialogShowing) {
+          _showSettingsDialog();
+        }
+      }
+    });
+  }
+
+  void _showAlarmPopup(Map<String, dynamic> alarm) {
+    _automationService.markAsNotified();
+    final startTime = DateTime.parse(alarm['start_time']);
+    final timeStr = "${startTime.hour.toString().padLeft(2, '0')}:${startTime.minute.toString().padLeft(2, '0')}";
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: const Color(0xFF0078D4),
+        duration: const Duration(seconds: 4),
+        content: Row(
+          children: [
+            const Icon(Icons.alarm_on, color: Colors.white),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                "Automation Set: ${alarm['activity_name']} at $timeStr",
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showSettingsDialog() {
+    if (_isDialogShowing) return;
+    _isDialogShowing = true;
+
+    final TextEditingController ipController = TextEditingController(
+      text: ApiConfig.baseUrl.replaceAll('http://', '').replaceAll(':3000/api', '')
+    );
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Server Configuration'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Connection lost. Please enter the backend IP:'),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ipController,
+              decoration: const InputDecoration(
+                labelText: 'IPv4 Address',
+                hintText: 'e.g., 192.168.1.7',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+            }, 
+            child: const Text('Later')
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              String newIp = ipController.text.trim();
+              if (newIp.isNotEmpty) {
+                await ApiConfig.updateBaseUrl(newIp);
+                if (mounted) {
+                   Navigator.pop(ctx);
+                   _apiService.checkHealth().then((connected) {
+                      if (mounted) setState(() => _isConnected = connected);
+                   });
+                }
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      )
+    ).then((_) => _isDialogShowing = false);
   }
 
   void _processUpcomingTasks(List<Map<String, dynamic>> tasks) {
@@ -293,7 +420,27 @@ class _RootDashboardState extends State<RootDashboard> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Dashboard'),
+        title: Row(
+          children: [
+            const Text('Dashboard'),
+            const SizedBox(width: 8),
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _isConnected ? Colors.green : Colors.red,
+                boxShadow: [
+                  BoxShadow(
+                    color: (_isConnected ? Colors.green : Colors.red).withOpacity(0.5),
+                    blurRadius: 4,
+                    spreadRadius: 2,
+                  )
+                ],
+              ),
+            ),
+          ],
+        ),
         elevation: 0,
         actions: [
           Builder(
@@ -501,21 +648,43 @@ class _RootDashboardState extends State<RootDashboard> {
                         itemCount: _upcomingTasks.length,
                         itemBuilder: (context, index) {
                           final task = _upcomingTasks[index];
+                          final bool isTargeted = _currentAlarm != null && _currentAlarm!['task_id'] == task['id'];
+                          final bool isActive = isTargeted && _currentAlarm!['status'] == 'active';
+
                           return Card(
                             margin: const EdgeInsets.only(bottom: 15),
+                            shape: isTargeted ? RoundedRectangleBorder(
+                              side: BorderSide(color: const Color(0xFF0078D4), width: isActive ? 2 : 1),
+                              borderRadius: BorderRadius.circular(12),
+                            ) : null,
                             child: InkWell(
                               onTap: () => _showScheduleDetails(task),
                               child: ListTile(
-                                leading: const CircleAvatar(
-                                  backgroundColor: const Color(0xFF0078D4),
-                                  child: Icon(Icons.event_note, color: Colors.white),
+                                leading: CircleAvatar(
+                                  backgroundColor: isTargeted ? const Color(0xFF0078D4) : const Color(0xFF0078D4).withOpacity(0.1),
+                                  child: Icon(isActive ? Icons.sensors : Icons.event_note, color: isTargeted ? Colors.white : const Color(0xFF0078D4)),
                                 ),
-                                title: Text(
-                                  task['activity_name'] ?? 'Task',
-                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                title: Row(
+                                  children: [
+                                    Text(
+                                      task['activity_name'] ?? 'Task',
+                                      style: TextStyle(fontWeight: isTargeted ? FontWeight.bold : FontWeight.normal),
+                                    ),
+                                    if (isActive) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        width: 8,
+                                        height: 8,
+                                        decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle),
+                                      ),
+                                    ],
+                                  ],
                                 ),
                                 subtitle: Text("${task['time_range'] ?? 'Unknown Time'} • ${task['target_node_name'] ?? ''}"),
-                                trailing: const Icon(Icons.alarm, color: Colors.blueGrey),
+                                trailing: isTargeted ? Icon(
+                                  isActive ? Icons.play_circle_fill : Icons.schedule,
+                                  color: const Color(0xFF0078D4),
+                                ) : null,
                               ),
                             ),
                           );

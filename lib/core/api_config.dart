@@ -2,7 +2,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiConfig {
   /// Local Machine IP (Auto-detected: 192.168.1.8)
-  static String baseUrl = 'http://192.168.1.8:3000/api';
+  static String baseUrl = 'http://192.168.1.7:3000/api';
 
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();

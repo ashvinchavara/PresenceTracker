@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'notification_service.dart';
 import 'api_service.dart';
 
 class BleMeshService {
@@ -28,7 +27,7 @@ class BleMeshService {
   }
 
   /// Called by AlarmService at the start time of a scheduled task
-  void initializeMeshNode(String role, String taskId, String userId, String taskName) async {
+  Future<void> initializeMeshNode(String role, String taskId, String userId, String taskName) async {
     _currentTaskId = taskId;
     _currentUserId = userId;
     _currentRole = role;
@@ -43,16 +42,12 @@ class BleMeshService {
 
     _btStateSub = FlutterBluePlus.adapterState.listen((state) {
       if (state == BluetoothAdapterState.off) {
-        NotificationService.showBluetoothWarning();
-      } else if (state == BluetoothAdapterState.on) {
-        NotificationService.cancelBluetoothWarning();
+        print('Bluetooth turned off during session');
       }
     });
 
     if (!await checkBleAvailability()) {
-        NotificationService.showBluetoothWarning();
-    } else {
-        NotificationService.cancelBluetoothWarning();
+        print('Warning: Bluetooth is not enabled.');
     }
     
     DateTime now = DateTime.now();
@@ -69,7 +64,7 @@ class BleMeshService {
         DateTime now = DateTime.now();
         _rootAggregatedData['19'] = {'first_view': now, 'last_view': now};
         _syncAggregatedDataToPrefs();
-        NotificationService.showAttendanceStatus(true, "Debug: Ashvin (ID 19) Detected");
+        print('DEBUG: Ashvin (ID 19) Detected');
       });
       // --------------------------------------------------
 
@@ -99,20 +94,18 @@ class BleMeshService {
     }
   }
 
-  void syncAndNotify(String role, String taskName) async {
+  Future<void> syncAndNotify(String role, String taskName) async {
     print('Executing pre-emptive sync for $role at 5 minutes to end...');
     
     if (role == 'root') {
       _uploadAggregatedDataToDatabase();
-      NotificationService.showAttendanceStatus(true, taskName);
     } else if (role == 'leaf') {
       bool likelyMarked = _peerTimes.length > 1; // Since own ID is in there too
-      NotificationService.showAttendanceStatus(likelyMarked, taskName);
     }
   }
 
   /// Called by AlarmService at the end time of a scheduled task
-  void endMeshTask(String role) async {
+  Future<void> endMeshTask(String role) async {
     print('Ending Mesh Task $_currentTaskId for $role');
     stopScanning();
     
@@ -129,7 +122,6 @@ class BleMeshService {
     await prefs.remove('root_aggregated_data');
     await prefs.remove('mesh_task_id');
     
-    NotificationService.cancelBluetoothWarning();
     
     _peerTimes.clear();
     _rootAggregatedData.clear();
