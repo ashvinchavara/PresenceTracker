@@ -28,6 +28,7 @@ class _RootDashboardState extends State<RootDashboard> {
   
   double _attendancePercentage = 0.0;
   List<Map<String, dynamic>> _upcomingTasks = [];
+  List<Map<String, dynamic>> _summaryData = [];
   String _displayDay = 'Today';
   bool _isLoading = true;
 
@@ -87,6 +88,7 @@ class _RootDashboardState extends State<RootDashboard> {
     }
 
     Map<String, dynamic>? alarm = await _automationService.getActiveAlarm();
+    print('Dashboard: Loaded alarm: $alarm');
     
     if (mounted) {
       setState(() {
@@ -107,19 +109,23 @@ class _RootDashboardState extends State<RootDashboard> {
     final userId = userProvider.currentUserNode?.id ?? 'unknown';
 
     try {
+      print('Dashboard: Fetching data for user $userId');
       final percentage = await _apiService.fetchDashboardStats(userId);
       final tasks = await _apiService.fetchUserTimetable(userId);
-
+      final summary = await _apiService.fetchAttendanceSummary(userId);
+      print('Dashboard: Received ${tasks.length} tasks');
 
       if (mounted) {
         setState(() {
           _attendancePercentage = percentage;
+          _summaryData = List<Map<String, dynamic>>.from(summary);
           _processUpcomingTasks(tasks);
           _isLoading = false;
         });
 
         // Automation
         if (userProvider.currentUserNode != null) {
+          print('Dashboard: Triggering automation for node: ${userProvider.currentUserNode!.id}');
           await _automationService.scheduleNextSessionIfNeeded(
             tasks, 
             userProvider.currentUserNode!.id, 
@@ -127,6 +133,8 @@ class _RootDashboardState extends State<RootDashboard> {
           );
           // Refresh state
           _loadMeshState();
+        } else {
+          print('Dashboard: currentUserNode is NULL, skipping automation');
         }
       }
     } catch (e) {
@@ -136,6 +144,18 @@ class _RootDashboardState extends State<RootDashboard> {
         });
       }
     }
+  }
+
+  double _getActivityPercentage(String? activityName) {
+    if (activityName == null) return 0.0;
+    final item = _summaryData.firstWhere(
+      (s) => s['activity_name'] == activityName,
+      orElse: () => {},
+    );
+    if (item.isEmpty) return 0.0;
+    final int total = item['total_sessions'] ?? 0;
+    final int present = item['user_present'] ?? 0;
+    return total > 0 ? present / total : 0.0;
   }
 
   void _startHealthPolling() {
@@ -251,17 +271,32 @@ class _RootDashboardState extends State<RootDashboard> {
     final dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
     final todayName = dayNames[now.weekday - 1];
 
-    // Helper to sort tasks by time string HH:mm
+    // Helper to sort tasks chronologically
     void sortTasks(List<Map<String, dynamic>> list) {
+      int toMinutes(String? timeStr) {
+        if (timeStr == null) return 0;
+        timeStr = timeStr.trim().toUpperCase();
+        final parts = timeStr.split(' ');
+        final timeParts = parts[0].split(':');
+        int h = int.parse(timeParts[0]);
+        int m = int.parse(timeParts[1]);
+        if (timeStr.contains('PM') && h < 12) h += 12;
+        if (timeStr.contains('AM') && h == 12) h = 0;
+        return h * 60 + m;
+      }
+
       list.sort((a, b) {
-        final timeA = (a['time_range'] as String?)?.split(' - ').first ?? '00:00';
-        final timeB = (b['time_range'] as String?)?.split(' - ').first ?? '00:00';
-        return timeA.compareTo(timeB);
+        final startA = (a['time_range'] as String?)?.split(' - ').first;
+        final startB = (b['time_range'] as String?)?.split(' - ').first;
+        return toMinutes(startA).compareTo(toMinutes(startB));
       });
     }
 
     // 1. Try today
-    final todayTasks = tasks.where((t) => t['day_of_week'] == todayName).toList();
+    final todayTasks = tasks.where((t) {
+       final days = (t['day_of_week'] as String?)?.split(',') ?? [];
+       return days.contains(todayName);
+    }).toList();
     if (todayTasks.isNotEmpty) {
       sortTasks(todayTasks);
       _upcomingTasks = todayTasks;
@@ -648,43 +683,125 @@ class _RootDashboardState extends State<RootDashboard> {
                         itemCount: _upcomingTasks.length,
                         itemBuilder: (context, index) {
                           final task = _upcomingTasks[index];
-                          final bool isTargeted = _currentAlarm != null && _currentAlarm!['task_id'] == task['id'];
+                          final bool isTargeted = _currentAlarm != null && _currentAlarm!['task_id'].toString() == task['id'].toString();
                           final bool isActive = isTargeted && _currentAlarm!['status'] == 'active';
+                          final Color statusColor = isActive ? Colors.green : (isTargeted ? const Color(0xFF0078D4) : Colors.grey);
+                          final onSurface = Theme.of(context).colorScheme.onSurface;
 
-                          return Card(
-                            margin: const EdgeInsets.only(bottom: 15),
-                            shape: isTargeted ? RoundedRectangleBorder(
-                              side: BorderSide(color: const Color(0xFF0078D4), width: isActive ? 2 : 1),
-                              borderRadius: BorderRadius.circular(12),
-                            ) : null,
-                            child: InkWell(
-                              onTap: () => _showScheduleDetails(task),
-                              child: ListTile(
-                                leading: CircleAvatar(
-                                  backgroundColor: isTargeted ? const Color(0xFF0078D4) : const Color(0xFF0078D4).withOpacity(0.1),
-                                  child: Icon(isActive ? Icons.sensors : Icons.event_note, color: isTargeted ? Colors.white : const Color(0xFF0078D4)),
+                          return GestureDetector(
+                            onTap: () => _showScheduleDetails(task),
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 15),
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: onSurface.withOpacity(0.05),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: statusColor.withOpacity(0.3),
+                                  width: isActive ? 2 : 1,
                                 ),
-                                title: Row(
-                                  children: [
-                                    Text(
-                                      task['activity_name'] ?? 'Task',
-                                      style: TextStyle(fontWeight: isTargeted ? FontWeight.bold : FontWeight.normal),
+                              ),
+                              child: Row(
+                                children: [
+                                  // Left side: Green dot if active, Alarm if targeted, Donut if neither
+                                  SizedBox(
+                                    width: 40,
+                                    height: 40,
+                                    child: isActive 
+                                      ? Center(
+                                          child: Container(
+                                            width: 12,
+                                            height: 12,
+                                            decoration: BoxDecoration(
+                                              shape: BoxShape.circle,
+                                              color: Colors.green,
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: Colors.green.withOpacity(0.5),
+                                                  blurRadius: 8,
+                                                  spreadRadius: 4,
+                                                )
+                                              ],
+                                            ),
+                                          ),
+                                        )
+                                      : isTargeted
+                                        ? Icon(Icons.notifications_active, color: statusColor, size: 28)
+                                        : Stack(
+                                            alignment: Alignment.center,
+                                            children: [
+                                              CircularProgressIndicator(
+                                                value: _getActivityPercentage(task['activity_name']),
+                                                strokeWidth: 4,
+                                                backgroundColor: statusColor.withOpacity(0.1),
+                                                valueColor: AlwaysStoppedAnimation<Color>(
+                                                  _getActivityPercentage(task['activity_name']) >= 0.75 ? Colors.green :
+                                                  (_getActivityPercentage(task['activity_name']) >= 0.5 ? Colors.orange : Colors.red)
+                                                ),
+                                              ),
+                                              Text(
+                                                "${(_getActivityPercentage(task['activity_name']) * 100).toInt()}%",
+                                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                                              ),
+                                            ],
+                                          ),
+                                  ),
+                                  const SizedBox(width: 15),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          task['activity_name'] ?? 'Task',
+                                          style: TextStyle(
+                                            color: onSurface,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 16,
+                                          ),
+                                        ),
+                                        if (isActive || isTargeted) ...[
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            isActive ? 'Session Active' : 'Upcoming',
+                                            style: TextStyle(
+                                              color: statusColor,
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 14,
+                                            ),
+                                          ),
+                                        ],
+                                        Text(
+                                          "${task['time_range'] ?? 'Unknown Time'} • ${task['target_node_name'] ?? ''}",
+                                          style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 12),
+                                        ),
+                                      ],
                                     ),
-                                    if (isActive) ...[
-                                      const SizedBox(width: 8),
-                                      Container(
-                                        width: 8,
-                                        height: 8,
-                                        decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle),
+                                  ),
+                                  // Right side: Donut if active or targeted
+                                  if (isActive || isTargeted)
+                                    SizedBox(
+                                      width: 32,
+                                      height: 32,
+                                      child: Stack(
+                                        alignment: Alignment.center,
+                                        children: [
+                                          CircularProgressIndicator(
+                                            value: _getActivityPercentage(task['activity_name']),
+                                            strokeWidth: 3,
+                                            backgroundColor: statusColor.withOpacity(0.1),
+                                            valueColor: AlwaysStoppedAnimation<Color>(
+                                              _getActivityPercentage(task['activity_name']) >= 0.75 ? Colors.green :
+                                              (_getActivityPercentage(task['activity_name']) >= 0.5 ? Colors.orange : Colors.red)
+                                            ),
+                                          ),
+                                          Text(
+                                            "${(_getActivityPercentage(task['activity_name']) * 100).toInt()}%",
+                                            style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold),
+                                          ),
+                                        ],
                                       ),
-                                    ],
-                                  ],
-                                ),
-                                subtitle: Text("${task['time_range'] ?? 'Unknown Time'} • ${task['target_node_name'] ?? ''}"),
-                                trailing: isTargeted ? Icon(
-                                  isActive ? Icons.play_circle_fill : Icons.schedule,
-                                  color: const Color(0xFF0078D4),
-                                ) : null,
+                                    ),
+                                ],
                               ),
                             ),
                           );

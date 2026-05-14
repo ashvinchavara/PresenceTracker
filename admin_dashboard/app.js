@@ -710,13 +710,18 @@ function renderTimetable() {
     tableBody.innerHTML = '';
 
     if (!state.timetable) return;
+    console.log('Timetable Data:', state.timetable.slice(0, 2));
 
     // Sorting Logic
     const dayOrder = { 'Monday': 1, 'Tuesday': 2, 'Wednesday': 3, 'Thursday': 4, 'Friday': 5, 'Saturday': 6, 'Sunday': 7 };
     
     const sortedTimetable = [...state.timetable].sort((a, b) => {
-        const dayA = dayOrder[a.days] || 99;
-        const dayB = dayOrder[b.days] || 99;
+        // Take first day if multiple
+        const firstDayA = (a.days || '').split(',')[0];
+        const firstDayB = (b.days || '').split(',')[0];
+        
+        const dayA = dayOrder[firstDayA] || 99;
+        const dayB = dayOrder[firstDayB] || 99;
         
         if (dayA !== dayB) return dayA - dayB;
         
@@ -953,14 +958,21 @@ function populateActivityDropdown() {
 
     let filteredActivities = state.activities;
     if (nodeId) {
-        // Find activity names scheduled for this node
         const nodeSchedules = state.timetable.filter(t => t.dept_id == nodeId);
         const nodeActivityNames = new Set(nodeSchedules.map(t => t.activity_name));
         filteredActivities = state.activities.filter(a => nodeActivityNames.has(a.name));
     }
 
+    const uniqueMap = new Map();
+    filteredActivities.forEach(a => {
+        if (!uniqueMap.has(a.name)) {
+            uniqueMap.set(a.name, a);
+        }
+    });
+    const uniqueActivities = Array.from(uniqueMap.values());
+
     activitySelect.innerHTML = '<option value="">Select Activity...</option>' + 
-        filteredActivities.map(a => `<option value="${a.id}" ${a.id == currentActivityVal ? 'selected' : ''}>${a.name}</option>`).join('');
+        uniqueActivities.map(a => `<option value="${a.id}" ${a.id == currentActivityVal ? 'selected' : ''}>${a.name}</option>`).join('');
 }
 
 function initAttendanceLogsView() {
@@ -1178,54 +1190,72 @@ function parseDBDate(dateStr) {
 }
 
 function getEnrolledActivityDates(activityName) {
-    // Get all unique dates where THIS activity was marked by anyone
+    // Get all records for this activity
     const allActivityLogs = state.attendance.filter(log => log.activity_name === activityName);
-    const uniqueDates = [...new Set(allActivityLogs.map(log => {
-        const d = parseDBDate(log.date || log.created_at); // Fallback just in case
-        return d.toDateString();
-    }))];
     
-    // Sort descending
-    return uniqueDates.map(d => new Date(d)).sort((a, b) => b - a);
+    // Group by unique (date + time_range)
+    const sessions = [];
+    const seen = new Set();
+    
+    allActivityLogs.forEach(log => {
+        const d = parseDBDate(log.date || log.created_at);
+        const dateStr = d.toDateString();
+        const timeRange = `${parse24h(log.start_time).time} ${parse24h(log.start_time).ampm} - ${parse24h(log.end_time).time} ${parse24h(log.end_time).ampm}`;
+        const key = `${dateStr}_${timeRange}`;
+        
+        if (!seen.has(key)) {
+            seen.add(key);
+            sessions.push({
+                date: d,
+                dateStr: dateStr,
+                timeRange: timeRange,
+                startTimeRaw: log.start_time
+            });
+        }
+    });
+    
+    // Sort Ascending by Date then Time
+    return sessions.sort((a, b) => {
+        if (a.date.getTime() !== b.date.getTime()) return a.date.getTime() - b.date.getTime();
+        return a.startTimeRaw.localeCompare(b.startTimeRaw);
+    });
 }
-
 function renderUserAnalyticsLogs(userId, activityId) {
     const logsContainer = document.getElementById('user-analytics-logs');
     const activity = state.activities.find(a => a.id == activityId);
     if (!activity) return;
 
-    const activityDates = getEnrolledActivityDates(activity.name);
+    const activitySessions = getEnrolledActivityDates(activity.name);
     const userLogs = state.attendance.filter(log => log.user_id === userId && log.activity_name === activity.name);
     
-    if (activityDates.length === 0) {
+    if (activitySessions.length === 0) {
         logsContainer.innerHTML = '<div class="loading-text" style="grid-column: 1 / -1;">No attendance records found for this activity yet.</div>';
         return;
     }
 
     let html = '';
-    activityDates.forEach(date => {
-        const dateStr = date.toDateString();
-        const log = userLogs.find(l => parseDBDate(l.date || l.created_at).toDateString() === dateStr);
+    activitySessions.forEach(session => {
+        const log = userLogs.find(l => {
+            const ld = parseDBDate(l.date || l.created_at).toDateString();
+            const lt = `${parse24h(l.start_time).time} ${parse24h(l.start_time).ampm} - ${parse24h(l.end_time).time} ${parse24h(l.end_time).ampm}`;
+            return ld === session.dateStr && lt === session.timeRange;
+        });
         const isPresent = !!log;
         
-        // Find scheduled time from this log or any log of this activity on this day
-        const anyLog = state.attendance.find(l => l.activity_name === activity.name && parseDBDate(l.date || l.created_at).toDateString() === dateStr);
-        const scheduledTime = anyLog ? `${parse24h(anyLog.start_time).time} ${parse24h(anyLog.start_time).ampm} - ${parse24h(anyLog.end_time).time} ${parse24h(anyLog.end_time).ampm}` : 'Scheduled';
-
         html += `
             <div class="session-status-card ${isPresent ? 'present' : 'absent'}">
-                <span class="date-text">${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                <span class="date-text">${session.date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
                 <div style="display: flex; align-items: center; justify-content: center; gap: 4px; font-size: 11px; font-weight: 700; color: ${isPresent ? 'var(--success)' : 'var(--danger)'};">
                     <span class="status-dot ${isPresent ? 'present' : 'absent'}"></span>
                     ${isPresent ? 'PRESENT' : 'ABSENT'}
                 </div>
-                <div style="font-size: 10px; color: var(--text-muted); margin-top: 5px;">${scheduledTime}</div>
+                <div style="font-size: 10px; color: var(--text-muted); margin-top: 5px;">${session.timeRange}</div>
             </div>
         `;
     });
-
     logsContainer.innerHTML = html;
 }
+
 
 async function generateIndividualReport(userId, _) {
     const user = state.users.find(u => u.id === userId);
@@ -1233,8 +1263,26 @@ async function generateIndividualReport(userId, _) {
 
     // Get all activities this user is assigned to
     const userSchedules = state.timetable.filter(t => t.user_ids && t.user_ids.split(',').includes(userId.toString()));
-    const userActivityNames = [...new Set(userSchedules.map(t => t.activity_name))];
-    const userActivities = state.activities.filter(a => userActivityNames.includes(a.name));
+    const uniqueNames = [...new Set(userSchedules.map(t => t.activity_name))];
+    const userActivities = [];
+    const seen = new Set();
+    state.activities.forEach(a => {
+        if (uniqueNames.includes(a.name) && !seen.has(a.name)) {
+            userActivities.push(a);
+            seen.add(a.name);
+        }
+    });
+
+    // Calculate Overall Stats
+    let totalOverallSessions = 0;
+    let totalOverallPresent = 0;
+    userActivities.forEach(activity => {
+        const activityDates = getEnrolledActivityDates(activity.name);
+        const userLogs = state.attendance.filter(log => log.user_id === userId && log.activity_name === activity.name);
+        totalOverallSessions += activityDates.length;
+        totalOverallPresent += userLogs.length;
+    });
+    const overallPercentage = totalOverallSessions > 0 ? ((totalOverallPresent / totalOverallSessions) * 100).toFixed(1) : "0.0";
 
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF();
@@ -1250,14 +1298,24 @@ async function generateIndividualReport(userId, _) {
     doc.setTextColor(100, 116, 139);
     doc.text(`Personnel: ${user.full_name} | Role: ${user.role || 'Personnel'}`, 15, currentY);
     currentY += 6;
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(15, 23, 42);
+    doc.text(`Overall Attendance: ${overallPercentage}% (${totalOverallPresent}/${totalOverallSessions})`, 15, currentY);
+    doc.setFont(undefined, 'normal');
+    currentY += 6;
+    doc.setTextColor(100, 116, 139);
     doc.text(`Generated: ${new Date().toLocaleString()}`, 15, currentY);
     currentY += 15;
 
     for (const activity of userActivities) {
-        const activityDates = getEnrolledActivityDates(activity.name);
+        const sessions = getEnrolledActivityDates(activity.name);
         const userLogs = state.attendance.filter(log => log.user_id === userId && log.activity_name === activity.name);
 
-        if (activityDates.length === 0) continue;
+        if (sessions.length === 0) continue;
+
+        const activityPresent = userLogs.length;
+        const activityTotal = sessions.length;
+        const activityPercentage = ((activityPresent / activityTotal) * 100).toFixed(1);
 
         // Check for page overflow
         if (currentY > 230) {
@@ -1272,6 +1330,12 @@ async function generateIndividualReport(userId, _) {
         doc.setTextColor(15, 23, 42);
         doc.setFont(undefined, 'bold');
         doc.text(activity.name, 20, currentY + 7);
+        
+        // Activity Stats aside heading
+        doc.setFontSize(10);
+        doc.setTextColor(71, 85, 105);
+        doc.text(`${activityPercentage}% (${activityPresent}/${activityTotal})`, 190, currentY + 7, { align: 'right' });
+        
         currentY += 15;
 
         // Grid Configuration
@@ -1284,7 +1348,7 @@ async function generateIndividualReport(userId, _) {
         doc.setFontSize(7);
         doc.setFont(undefined, 'normal');
 
-        activityDates.forEach((date, index) => {
+        sessions.forEach((session, index) => {
             if (index > 0 && index % boxesPerRow === 0) {
                 xPos = 15;
                 currentY += boxHeight + spacing;
@@ -1296,8 +1360,11 @@ async function generateIndividualReport(userId, _) {
                 }
             }
 
-            const dateStr = date.toDateString();
-            const log = userLogs.find(l => parseDBDate(l.date || l.created_at).toDateString() === dateStr);
+            const log = userLogs.find(l => {
+                const ld = parseDBDate(l.date || l.created_at).toDateString();
+                const lt = `${parse24h(l.start_time).time} ${parse24h(l.start_time).ampm} - ${parse24h(l.end_time).time} ${parse24h(l.end_time).ampm}`;
+                return ld === session.dateStr && lt === session.timeRange;
+            });
             const isPresent = !!log;
 
             // Draw Box
@@ -1314,21 +1381,15 @@ async function generateIndividualReport(userId, _) {
             // Date Text
             doc.setTextColor(15, 23, 42);
             doc.setFont(undefined, 'bold');
-            doc.text(date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }), xPos + 2, currentY + 5);
+            doc.text(session.date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }), xPos + 2, currentY + 5);
             
             // Status/Time Text
             doc.setFont(undefined, 'normal');
             doc.setTextColor(isPresent ? 16 : 239, isPresent ? 185 : 68, isPresent ? 129 : 68);
             doc.text(isPresent ? 'PRESENT' : 'ABSENT', xPos + 2, currentY + 10);
             
-            // Find scheduled time from any log of this activity on this day
-            const anyLog = state.attendance.find(l => l.activity_name === activity.name && parseDBDate(l.date || l.created_at).toDateString() === dateStr);
-            const scheduledTime = anyLog ? `${parse24h(anyLog.start_time).time} ${parse24h(anyLog.start_time).ampm} - ${parse24h(anyLog.end_time).time} ${parse24h(anyLog.end_time).ampm}` : '';
-            
-            if (scheduledTime) {
-                doc.setTextColor(100, 116, 139);
-                doc.text(scheduledTime, xPos + 2, currentY + 14);
-            }
+            doc.setTextColor(100, 116, 139);
+            doc.text(session.timeRange, xPos + 2, currentY + 14);
 
             xPos += boxWidth + spacing;
         });

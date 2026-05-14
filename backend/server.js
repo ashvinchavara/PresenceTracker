@@ -437,30 +437,53 @@ app.get('/api/dashboard_stats/:userId', async (req, res) => {
 });
 
 // Per-activity attendance summary for a user
-// Returns: activity_name, timetable_id, total_sessions (rows in attendance for that activity),
-//          user_present (rows where user_id = userId), dates the user was present, all dates
 app.get('/api/attendance_summary/:userId', async (req, res) => {
     try {
         const query = `
             SELECT 
-                t.id as timetable_id, 
-                act.name as activity_name,
+                act.id as activity_id,
+                TRIM(act.name) as activity_name,
+                DATE_FORMAT(a.date, '%Y-%m-%d') as date,
                 CONCAT(TIME_FORMAT(t.start_time, '%h:%i %p'), ' - ', TIME_FORMAT(t.end_time, '%h:%i %p')) as time_range,
-                (SELECT COUNT(DISTINCT date) FROM attendance WHERE timetable_id = t.id AND date <= CURDATE()) as total_sessions,
-                (SELECT COUNT(DISTINCT date) FROM attendance WHERE timetable_id = t.id AND user_id = ? AND date <= CURDATE()) as user_present,
-                (SELECT GROUP_CONCAT(DISTINCT DATE_FORMAT(date, '%Y-%m-%d') ORDER BY date DESC) FROM attendance WHERE timetable_id = t.id AND date <= CURDATE()) as all_dates,
-                (SELECT GROUP_CONCAT(DISTINCT DATE_FORMAT(date, '%Y-%m-%d') ORDER BY date DESC) FROM attendance WHERE timetable_id = t.id AND user_id = ? AND date <= CURDATE()) as present_dates
-            FROM timetable t
+                MAX(CASE WHEN a.user_id = ? THEN 1 ELSE 0 END) as is_present,
+                t.start_time
+            FROM attendance a
+            JOIN timetable t ON a.timetable_id = t.id
             JOIN activities act ON t.activity_id = act.id
             JOIN timetable_users tu ON t.id = tu.timetable_id
             WHERE tu.user_id = ?
+              AND a.date <= CURDATE()
+            GROUP BY act.id, a.date, t.id
+            ORDER BY activity_name, a.date ASC, t.start_time ASC
         `;
-        const [rows] = await pool.query(query, [req.params.userId, req.params.userId, req.params.userId]);
+        const [rows] = await pool.query(query, [req.params.userId, req.params.userId]);
         
-        const results = rows.map(r => ({
-            ...r,
-            all_dates: r.all_dates ? r.all_dates.split(',') : [],
-            present_dates: r.present_dates ? r.present_dates.split(',') : []
+        const grouped = {};
+        rows.forEach(r => {
+            const nameKey = (r.activity_name || 'Unknown').trim().toUpperCase();
+            if (!grouped[nameKey]) {
+                grouped[nameKey] = {
+                    activity_name: r.activity_name.trim(),
+                    sessions: [],
+                    all_dates: [],
+                    present_dates: []
+                };
+            }
+            grouped[nameKey].sessions.push({
+                date: r.date,
+                time_range: r.time_range,
+                is_present: r.is_present === 1
+            });
+            grouped[nameKey].all_dates.push(r.date);
+            if (r.is_present === 1) {
+                grouped[nameKey].present_dates.push(r.date);
+            }
+        });
+
+        const results = Object.values(grouped).map(g => ({
+            ...g,
+            total_sessions: g.sessions.length,
+            user_present: g.present_dates.length
         }));
 
         res.json(results);

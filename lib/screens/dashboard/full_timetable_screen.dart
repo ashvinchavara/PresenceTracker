@@ -13,23 +13,41 @@ class FullTimetableScreen extends StatefulWidget {
 class _FullTimetableScreenState extends State<FullTimetableScreen> {
   final ApiService _apiService = ApiService();
   List<Map<String, dynamic>> _timetable = [];
+  List<Map<String, dynamic>> _summary = [];
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _fetchTimetable();
+    _fetchData();
   }
 
-  Future<void> _fetchTimetable() async {
+  Future<void> _fetchData() async {
     final userId = Provider.of<NodeRoleProvider>(context, listen: false).currentUserNode?.id ?? '';
-    final data = await _apiService.fetchUserTimetable(userId);
+    final results = await Future.wait([
+      _apiService.fetchUserTimetable(userId),
+      _apiService.fetchAttendanceSummary(userId),
+    ]);
+
     if (mounted) {
       setState(() {
-        _timetable = data;
+        _timetable = List<Map<String, dynamic>>.from(results[0]);
+        _summary = List<Map<String, dynamic>>.from(results[1]);
         _isLoading = false;
       });
     }
+  }
+
+  double _getActivityPercentage(String? activityName) {
+    if (activityName == null) return 0.0;
+    final item = _summary.firstWhere(
+      (s) => s['activity_name'] == activityName,
+      orElse: () => {},
+    );
+    if (item.isEmpty) return 0.0;
+    final int total = item['total_sessions'] ?? 0;
+    final int present = item['user_present'] ?? 0;
+    return total > 0 ? present / total : 0.0;
   }
 
   void _showScheduleDetails(Map<String, dynamic> task) async {
@@ -141,9 +159,20 @@ class _FullTimetableScreenState extends State<FullTimetableScreen> {
 
                     // Sort activities by time
                     activities.sort((a, b) {
-                      final timeA = (a['time_range'] as String?)?.split(' - ').first ?? '00:00';
-                      final timeB = (b['time_range'] as String?)?.split(' - ').first ?? '00:00';
-                      return timeA.compareTo(timeB);
+                      int toMinutes(String? timeStr) {
+                        if (timeStr == null) return 0;
+                        timeStr = timeStr.trim().toUpperCase();
+                        final parts = timeStr.split(' ');
+                        final timeParts = parts[0].split(':');
+                        int h = int.parse(timeParts[0]);
+                        int m = int.parse(timeParts[1]);
+                        if (timeStr.contains('PM') && h < 12) h += 12;
+                        if (timeStr.contains('AM') && h == 12) h = 0;
+                        return h * 60 + m;
+                      }
+                      final startA = (a['time_range'] as String?)?.split(' - ').first;
+                      final startB = (b['time_range'] as String?)?.split(' - ').first;
+                      return toMinutes(startA).compareTo(toMinutes(startB));
                     });
 
                     return Column(
@@ -156,17 +185,72 @@ class _FullTimetableScreenState extends State<FullTimetableScreen> {
                             style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF0078D4)),
                           ),
                         ),
-                        ...activities.map((act) => Card(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              child: InkWell(
-                                onTap: () => _showScheduleDetails(act),
-                                child: ListTile(
-                                  leading: const Icon(Icons.access_time, color: Color(0xFF0078D4)),
-                                  title: Text(act['activity_name'] ?? 'Activity'),
-                                  subtitle: Text("${act['time_range'] ?? 'Anytime'} • ${act['target_node_name'] ?? ''}"),
+                        ...activities.map((act) {
+                          final onSurface = Theme.of(context).colorScheme.onSurface;
+                          const statusColor = Colors.grey;
+                          
+                          return GestureDetector(
+                            onTap: () => _showScheduleDetails(act),
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 15),
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: onSurface.withOpacity(0.05),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: statusColor.withOpacity(0.3),
                                 ),
                               ),
-                            )),
+                              child: Row(
+                                children: [
+                                  SizedBox(
+                                    width: 40,
+                                    height: 40,
+                                    child: Stack(
+                                      alignment: Alignment.center,
+                                      children: [
+                                        CircularProgressIndicator(
+                                          value: _getActivityPercentage(act['activity_name']),
+                                          strokeWidth: 4,
+                                          backgroundColor: statusColor.withOpacity(0.1),
+                                          valueColor: AlwaysStoppedAnimation<Color>(
+                                            _getActivityPercentage(act['activity_name']) >= 0.75 ? Colors.green :
+                                            (_getActivityPercentage(act['activity_name']) >= 0.5 ? Colors.orange : Colors.red)
+                                          ),
+                                        ),
+                                        Text(
+                                          "${(_getActivityPercentage(act['activity_name']) * 100).toInt()}%",
+                                          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 15),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          act['activity_name'] ?? 'Activity',
+                                          style: TextStyle(
+                                            color: onSurface,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 16,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),                                        
+                                        Text(
+                                          "${act['time_range'] ?? 'Anytime'} • ${act['target_node_name'] ?? ''}",
+                                          style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 12),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }),
                         const SizedBox(height: 16),
                       ],
                     );

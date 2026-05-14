@@ -5,62 +5,60 @@ import 'ble_mesh_service.dart';
 import 'api_service.dart';
 import '../providers/node_role_provider.dart';
 
+// --- Background Task Entry Points (Top-level) ---
+
+@pragma('vm:entry-point')
+void onSessionStart() async {
+  final prefs = await SharedPreferences.getInstance();
+  final alarmData = prefs.getString('session_alarm');
+  if (alarmData == null) return;
+
+  final data = jsonDecode(alarmData);
+  final taskId = data['task_id'].toString();
+  final userId = data['user_id'].toString();
+  final activityName = data['activity_name'] ?? 'Session';
+  final role = data['is_root'] == true ? 'root' : 'leaf';
+
+  // Start BLE
+  final bleService = BleMeshService();
+  await bleService.initializeMeshNode(role, taskId, userId, activityName);
+
+  // Update state to Active
+  data['status'] = 'active';
+  await prefs.setString('session_alarm', jsonEncode(data));
+  
+  // Schedule End Alarm
+  final endTime = DateTime.parse(data['end_time']);
+  await AndroidAlarmManager.oneShotAt(
+    endTime,
+    1002, // _endAlarmId
+    onSessionEnd,
+    exact: true,
+    wakeup: true,
+  );
+}
+
+@pragma('vm:entry-point')
+void onSessionEnd() async {
+  final prefs = await SharedPreferences.getInstance();
+  final alarmData = prefs.getString('session_alarm');
+  if (alarmData == null) return;
+
+  final data = jsonDecode(alarmData);
+  final role = data['is_root'] == true ? 'root' : 'leaf';
+
+  // End BLE
+  final bleService = BleMeshService();
+  await bleService.endMeshTask(role);
+
+  // Clear alarm
+  await prefs.remove('session_alarm');
+}
+
 class SessionAutomationService {
   static const String _alarmKey = 'session_alarm';
   static const int _startAlarmId = 1001;
   static const int _endAlarmId = 1002;
-
-  // --- Background Task Entry Points ---
-  
-  @pragma('vm:entry-point')
-  static void onSessionStart() async {
-    final prefs = await SharedPreferences.getInstance();
-    final alarmData = prefs.getString(_alarmKey);
-    if (alarmData == null) return;
-
-    final data = jsonDecode(alarmData);
-    final taskId = data['task_id'].toString();
-    final userId = data['user_id'].toString();
-    final activityName = data['activity_name'] ?? 'Session';
-    final role = data['is_root'] == true ? 'root' : 'leaf';
-
-    // Start BLE
-    final bleService = BleMeshService();
-    await bleService.initializeMeshNode(role, taskId, userId, activityName);
-
-    // Update state to Active
-    data['status'] = 'active';
-    await prefs.setString(_alarmKey, jsonEncode(data));
-    
-    // Schedule End Alarm
-    final endTime = DateTime.parse(data['end_time']);
-    await AndroidAlarmManager.oneShotAt(
-      endTime,
-      _endAlarmId,
-      onSessionEnd,
-      exact: true,
-      wakeup: true,
-    );
-  }
-
-  @pragma('vm:entry-point')
-  static void onSessionEnd() async {
-    final prefs = await SharedPreferences.getInstance();
-    final alarmData = prefs.getString(_alarmKey);
-    if (alarmData == null) return;
-
-    final data = jsonDecode(alarmData);
-    final role = data['is_root'] == true ? 'root' : 'leaf';
-
-    // End BLE
-    final bleService = BleMeshService();
-    await bleService.endMeshTask(role);
-
-    // Clear alarm or set to completed
-    await prefs.remove(_alarmKey);
-    
-    // The UI or app-start logic will pick up the next session
-  }
 
   // --- Instance Methods ---
 
@@ -72,48 +70,76 @@ class SessionAutomationService {
   }
 
   Future<void> scheduleNextSessionIfNeeded(List<Map<String, dynamic>> tasks, String userId, bool isRoot) async {
+    print('Automation: scheduleNextSessionIfNeeded called with ${tasks.length} tasks');
     final prefs = await SharedPreferences.getInstance();
-    if (prefs.containsKey(_alarmKey)) return; // Already scheduled
+    if (prefs.containsKey(_alarmKey)) {
+      print('Automation: Alarm already exists in SharedPreferences.');
+      return; 
+    }
 
-    if (tasks.isEmpty) return;
+    if (tasks.isEmpty) {
+      print('Automation: Tasks list is empty.');
+      return;
+    }
 
-    // Find immediate upcoming task
-    // (This logic should ideally find the first task starting AFTER now)
+    // Find immediate upcoming task across next 7 days
     final now = DateTime.now();
+    final dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    
     Map<String, dynamic>? nextTask;
     DateTime? nextStartTime;
     DateTime? nextEndTime;
 
-    final dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    final todayName = dayNames[now.weekday - 1];
+    print('Automation: Searching for next task starting from $now');
 
-    for (var task in tasks) {
-      if (task['day_of_week'] != todayName) continue;
-      
-      final timeRange = task['time_range'] as String; // "HH:mm - HH:mm"
-      final parts = timeRange.split(' - ');
-      final startStr = parts[0];
-      final endStr = parts[1];
+    for (int dayOffset = 0; dayOffset < 7; dayOffset++) {
+      final checkDate = now.add(Duration(days: dayOffset));
+      final dayName = dayNames[checkDate.weekday - 1];
+      print('Automation: Checking $dayName (+ $dayOffset days)');
 
-      final start = _parseTime(startStr, now);
-      final end = _parseTime(endStr, now);
+      DateTime? bestOnThisDay;
+      Map<String, dynamic>? taskOnThisDay;
+      DateTime? endOnThisDay;
 
-      if (start.isAfter(now)) {
-        if (nextStartTime == null || start.isBefore(nextStartTime)) {
+      for (var task in tasks) {
+        final days = (task['day_of_week'] as String?)?.split(',') ?? [];
+        if (!days.contains(dayName)) continue;
+
+        final timeRange = task['time_range'] as String;
+        final parts = timeRange.split(' - ');
+        final start = _parseTime(parts[0], checkDate);
+        final end = _parseTime(parts[1], checkDate);
+
+        // Case 1: Task is in the future
+        if (start.isAfter(now)) {
+          if (bestOnThisDay == null || start.isBefore(bestOnThisDay)) {
+            bestOnThisDay = start;
+            endOnThisDay = end;
+            taskOnThisDay = task;
+          }
+        } 
+        // Case 2: Task is happening RIGHT NOW
+        else if (now.isAfter(start) && now.isBefore(end)) {
+          print('Automation: Found task happening NOW: ${task['activity_name']}');
+          nextTask = task;
           nextStartTime = start;
           nextEndTime = end;
-          nextTask = task;
+          break; // Stop everything, run this now
         }
-      } else if (now.isAfter(start) && now.isBefore(end)) {
-          // Current session? Trigger it immediately if not already tracking
-          nextStartTime = start;
-          nextEndTime = end;
-          nextTask = task;
-          break;
+      }
+
+      if (nextTask != null) break; // Found immediate active task
+
+      if (bestOnThisDay != null) {
+        nextTask = taskOnThisDay;
+        nextStartTime = bestOnThisDay;
+        nextEndTime = endOnThisDay;
+        break; // Found the earliest future task
       }
     }
 
     if (nextTask != null && nextStartTime != null) {
+      print('Automation: Next task selected: ${nextTask['activity_name']} at $nextStartTime');
       final alarmData = {
         'task_id': nextTask['id'],
         'user_id': userId,
@@ -122,35 +148,63 @@ class SessionAutomationService {
         'end_time': nextEndTime?.toIso8601String(),
         'is_root': isRoot,
         'status': 'scheduled',
-        'notified': false, // To handle the one-time popup
+        'notified': false,
       };
 
       await prefs.setString(_alarmKey, jsonEncode(alarmData));
 
       // Schedule Start Alarm
       if (nextStartTime.isAfter(now)) {
-        await AndroidAlarmManager.oneShotAt(
-          nextStartTime,
-          _startAlarmId,
-          onSessionStart,
-          exact: true,
-          wakeup: true,
-        );
+        print('Automation: Scheduling background alarm for $nextStartTime');
+        try {
+          final success = await AndroidAlarmManager.oneShotAt(
+            nextStartTime,
+            _startAlarmId,
+            onSessionStart,
+            exact: true,
+            wakeup: true,
+            rescheduleOnReboot: true,
+          );
+          print('Automation: oneShotAt result: $success');
+        } catch (e) {
+          print('Automation: oneShotAt ERROR: $e');
+        }
       } else {
         // Already started? Run now
+        print('Automation: Session already started, triggering immediately.');
         onSessionStart();
       }
+    } else {
+      print('Automation: No immediate upcoming tasks found for today.');
     }
   }
 
   DateTime _parseTime(String timeStr, DateTime baseDate) {
-    final parts = timeStr.split(':');
+    // timeStr is like "10:30 AM" or "22:30"
+    timeStr = timeStr.trim().toUpperCase();
+    int hour = 0;
+    int minute = 0;
+
+    if (timeStr.contains('AM') || timeStr.contains('PM')) {
+      final parts = timeStr.split(' ');
+      final timeParts = parts[0].split(':');
+      hour = int.parse(timeParts[0]);
+      minute = int.parse(timeParts[1]);
+      
+      if (timeStr.contains('PM') && hour < 12) hour += 12;
+      if (timeStr.contains('AM') && hour == 12) hour = 0;
+    } else {
+      final timeParts = timeStr.split(':');
+      hour = int.parse(timeParts[0]);
+      minute = int.parse(timeParts[1]);
+    }
+
     return DateTime(
       baseDate.year,
       baseDate.month,
       baseDate.day,
-      int.parse(parts[0]),
-      int.parse(parts[1]),
+      hour,
+      minute,
     );
   }
 
