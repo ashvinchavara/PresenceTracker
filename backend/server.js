@@ -575,16 +575,16 @@ app.get('/api/attendance_summary/:userId', async (req, res) => {
                 };
             }
             grouped[nameKey].sessions.push({
-                timetable_id: r.id,
+                timetable_id: r.activity_id,
                 session_date: r.session_date,
                 time_range: r.time_range,
                 is_present: r.is_present === 1,
                 entry_time: r.entry_time,
                 exit_time: r.exit_time
             });
-            grouped[nameKey].all_dates.push(r.date);
+            grouped[nameKey].all_dates.push(r.session_date);
             if (r.is_present === 1) {
-                grouped[nameKey].present_dates.push(r.date);
+                grouped[nameKey].present_dates.push(r.session_date);
             }
         });
 
