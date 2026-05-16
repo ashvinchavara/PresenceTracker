@@ -1,5 +1,5 @@
 // app.js - Direct MySQL Connection Logic
-let API_BASE = 'http://localhost:3000/api';
+let API_BASE = 'https://presencetracker.onrender.com/api';
 
 // Shared State
 let state = {
@@ -12,7 +12,8 @@ let state = {
     sort: {
         column: 'full_name',
         direction: 'asc'
-    }
+    },
+    selectedNodeFilter: null
 };
 
 let selectedPickerUsers = []; // For Timetable Assignment
@@ -107,13 +108,14 @@ async function loadAllData() {
     const statusIndicator = document.getElementById('db-status');
     const connectionText = document.getElementById('connection-text');
 
-    const [depts, users, tt, att, acts, roles] = await Promise.all([
+    const [depts, users, tt, att, acts, roles, dbStatus] = await Promise.all([
         apiFetch('/departments'),
         apiFetch('/users'),
         apiFetch('/timetable'),
         apiFetch('/attendance'),
         apiFetch('/activities'),
-        apiFetch('/roles')
+        apiFetch('/roles'),
+        apiFetch('/db-status')
     ]);
 
     if (depts) {
@@ -125,10 +127,20 @@ async function loadAllData() {
         state.roles = roles || [];
 
         statusIndicator.classList.add('connected');
-        connectionText.innerText = 'Connected (MySQL Direct)';
+        
+        if (dbStatus && dbStatus.mode === 'cloud') {
+            connectionText.innerHTML = `Connected to <span style="color: var(--success);">Aiven Cloud</span>`;
+            statusIndicator.style.background = 'var(--success)';
+        } else {
+            connectionText.innerHTML = `Connected to <span style="color: var(--warning);">Local MySQL</span> (Offline Fallback)`;
+            statusIndicator.style.background = 'var(--warning)';
+        }
+        
         renderUI();
     } else {
         connectionText.innerText = 'Offline / Error';
+        statusIndicator.classList.remove('connected');
+        statusIndicator.style.background = 'var(--danger)';
     }
 }
 
@@ -498,67 +510,116 @@ window.deleteDept = async (id) => {
 // --- 2. Users & Assignments ---
 
 function renderUserAssignments() {
-    const tableBody = document.getElementById('assignments-table-body');
+    const foldersContainer = document.getElementById('personnel-folders-container');
+    const gridBody = document.getElementById('assignments-grid-body');
     const filter = document.getElementById('assignment-name-filter')?.value.toLowerCase() || '';
-    tableBody.innerHTML = '';
+    
+    if (!foldersContainer || !gridBody) return;
 
-    let sortedUsers = [...state.users];
+    // 1. Render Folders (only show if no search is active, or show all if search is active but allow filtering)
+    const nodesWithUsers = new Set(state.users.map(u => u.dept_id));
+    const activeNodes = state.departments.filter(d => nodesWithUsers.has(d.id));
 
-    // Apply Filter
-    sortedUsers = sortedUsers.filter(u =>
-        u.full_name.toLowerCase().includes(filter) ||
-        (u.email && u.email.toLowerCase().includes(filter)) ||
-        (u.dept_name && u.dept_name.toLowerCase().includes(filter))
-    );
+    foldersContainer.innerHTML = activeNodes.map(node => `
+        <div class="glass-panel folder-card ${state.selectedNodeFilter == node.id ? 'active' : ''}" 
+             onclick="filterByNode(${node.id})"
+             style="padding: 20px; cursor: pointer; display: flex; align-items: center; gap: 15px; transition: all 0.2s;">
+            <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(99, 102, 241, 0.1); display: flex; align-items: center; justify-content: center; color: var(--primary);">
+                <span class="material-symbols-rounded">folder</span>
+            </div>
+            <div style="overflow: hidden;">
+                <div style="font-weight: 600; font-size: 14px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">${node.name}</div>
+                <div style="font-size: 11px; color: var(--text-muted);">${state.users.filter(u => u.dept_id == node.id).length} Members</div>
+            </div>
+        </div>
+    `).join('');
 
-    // Apply Sort
-    if (state.sort.column) {
-        sortedUsers.sort((a, b) => {
-            let valA = a[state.sort.column] || '';
-            let valB = b[state.sort.column] || '';
-
-            // Map common aliases from HTML
-            if (state.sort.column === 'sub_dept_name') { valA = a.dept_name || ''; valB = b.dept_name || ''; }
-            if (state.sort.column === 'role_name') { valA = a.role || ''; valB = b.role || ''; }
-
-            if (typeof valA === 'string') valA = valA.toLowerCase();
-            if (typeof valB === 'string') valB = valB.toLowerCase();
-
-            if (valA < valB) return state.sort.direction === 'asc' ? -1 : 1;
-            if (valA > valB) return state.sort.direction === 'asc' ? 1 : -1;
-            return 0;
-        });
+    // 2. Filter Users
+    let filteredUsers = [...state.users];
+    
+    if (state.selectedNodeFilter) {
+        filteredUsers = filteredUsers.filter(u => u.dept_id == state.selectedNodeFilter);
+        document.getElementById('btn-reset-view').style.display = 'flex';
+        document.getElementById('btn-delete-all-node').style.display = 'flex';
+        const node = state.departments.find(d => d.id == state.selectedNodeFilter);
+        document.getElementById('current-node-selection-title').innerText = node ? `Personnel in ${node.name}` : 'Personnel';
+    } else {
+        document.getElementById('btn-reset-view').style.display = 'none';
+        document.getElementById('btn-delete-all-node').style.display = 'none';
+        document.getElementById('current-node-selection-title').innerText = 'All Personnel';
     }
 
-    if (sortedUsers.length === 0) {
-        tableBody.innerHTML = '<tr><td colspan="5" class="loading-text">No matching personnel found.</td></tr>';
+    if (filter) {
+        filteredUsers = filteredUsers.filter(u =>
+            u.full_name.toLowerCase().includes(filter) ||
+            (u.email && u.email.toLowerCase().includes(filter))
+        );
+    }
+
+    // 3. Render User Cards
+    if (filteredUsers.length === 0) {
+        gridBody.innerHTML = '<div class="loading-text" style="grid-column: 1 / -1;">No matching personnel found.</div>';
         return;
     }
 
-    sortedUsers.forEach(u => {
-        tableBody.innerHTML += `
-            <tr id="user-row-${u.id}">
-                <td style="text-align: center;">
-                    <input type="checkbox" class="user-select-checkbox" data-id="${u.id}" onchange="updateBulkDeleteUI()">
-                </td>
-                <td><strong>${u.full_name}</strong><br><small>${u.email}</small></td>
-                <td style="font-size: 13px;">${getFullDeptPath(u.dept_id)}</td>
-                <td><span class="badge warning">${u.role || 'student'}</span></td>
-                <td class="action-cell">
-                    <button class="btn-icon" onclick="editUserRow(${u.id})">
-                        <span class="material-symbols-rounded">edit</span>
-                    </button>
-                    <button class="btn-icon text-danger" onclick="deleteUser(${u.id})">
-                        <span class="material-symbols-rounded">delete</span>
-                    </button>
-                </td>
-            </tr>
-        `;
-    });
+    gridBody.innerHTML = filteredUsers.map(u => {
+        const initialsHtml = `<div class="student-initial">${u.full_name.charAt(0)}</div>`;
+        const avatarHtml = u.image_url 
+            ? `<img src="${API_BASE.replace('/api', '')}${u.image_url}" 
+                 class="student-initial" style="object-fit: cover;"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+               <div class="student-initial" style="display: none;">${u.full_name.charAt(0)}</div>`
+            : initialsHtml;
 
-    updateSortIcons();
-    updateBulkDeleteUI();
+        return `
+            <div class="student-card" style="position: relative;">
+                <div style="position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;">
+                    <button class="btn-icon" style="width: 28px; height: 28px;" onclick="editUserRow(${u.id})">
+                        <span class="material-symbols-rounded" style="font-size: 16px;">edit</span>
+                    </button>
+                    <button class="btn-icon text-danger" style="width: 28px; height: 28px;" onclick="deleteUser(${u.id})">
+                        <span class="material-symbols-rounded" style="font-size: 16px;">delete</span>
+                    </button>
+                </div>
+                <div style="position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px;">
+                    ${avatarHtml}
+                </div>
+                <div class="student-info">
+                    <span class="student-name">${u.full_name}</span>
+                    <span class="student-role">${u.role || 'Personnel'}</span>
+                    <span class="text-muted" style="font-size: 10px;">${u.email}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
 }
+
+window.filterByNode = (nodeId) => {
+    state.selectedNodeFilter = (state.selectedNodeFilter === nodeId) ? null : nodeId;
+    renderUserAssignments();
+};
+
+window.resetPersonnelView = () => {
+    state.selectedNodeFilter = null;
+    renderUserAssignments();
+};
+
+window.deleteAllInNode = async () => {
+    if (!state.selectedNodeFilter) return;
+    const node = state.departments.find(d => d.id == state.selectedNodeFilter);
+    const usersToDelete = state.users.filter(u => u.dept_id == state.selectedNodeFilter);
+    
+    if (usersToDelete.length === 0) return alert('No personnel in this node.');
+    
+    if (!confirm(`CRITICAL ACTION: Are you sure you want to delete ALL ${usersToDelete.length} personnel in "${node?.name}"? This cannot be undone.`)) return;
+
+    for (const u of usersToDelete) {
+        await fetch(`${API_BASE}/users/${u.id}`, { method: 'DELETE' });
+    }
+
+    alert(`Successfully removed all personnel from ${node?.name}.`);
+    loadAllData();
+};
 
 window.sortAssignments = (column) => {
     if (state.sort.column === column) {
@@ -572,61 +633,42 @@ window.sortAssignments = (column) => {
 
 window.editUserRow = (id) => {
     const u = state.users.find(user => user.id === id);
-    const row = document.getElementById(`user-row-${id}`);
-    if (!u || !row) return;
+    if (!u) return;
 
-    row.innerHTML = `
-        <td style="text-align: center;"><input type="checkbox" disabled></td>
-        <td>
-            <input type="text" id="edit-name-${id}" class="custom-input" value="${u.full_name}" 
-                style="font-size: 13px; height: 32px; margin-bottom: 5px; width: 100%;">
-            <input type="email" id="edit-email-${id}" class="custom-input" value="${u.email}" 
-                style="font-size: 11px; height: 28px; width: 100%;">
-        </td>
-        <td>
-            <select id="edit-dept-${id}" class="custom-input" style="font-size: 12px; height: 40px; width: 100%;">
-                <option value="">Unassigned</option>
-                ${state.departments.map(d => {
-        const path = getFullDeptPath(d.id).replace(/<[^>]*>?/gm, ''); // Strip HTML tags
-        return `<option value="${d.id}" ${d.id === u.dept_id ? 'selected' : ''}>${path}</option>`;
-    }).join('')}
-            </select>
-        </td>
-        <td>
-            <input type="text" id="edit-role-${id}" class="custom-input" value="${u.role || ''}" 
-                style="font-size: 13px; height: 40px; width: 100%;">
-        </td>
-        <td class="action-cell">
-            <button class="btn-icon text-success" onclick="saveUserEdit(${id})">
-                <span class="material-symbols-rounded">check</span>
-            </button>
-            <button class="btn-icon" onclick="renderUserAssignments()">
-                <span class="material-symbols-rounded">close</span>
-            </button>
-        </td>
-    `;
+    document.getElementById('edit-user-id').value = u.id;
+    document.getElementById('edit-user-name').value = u.full_name;
+    document.getElementById('edit-user-email').value = u.email;
+    document.getElementById('edit-user-role').value = u.role || '';
+    
+    const deptSelect = document.getElementById('edit-user-dept');
+    deptSelect.innerHTML = '<option value="">Unassigned</option>' + 
+        state.departments.map(d => `<option value="${d.id}" ${d.id == u.dept_id ? 'selected' : ''}>${d.name}</option>`).join('');
+
+    document.getElementById('edit-user-modal').style.display = 'flex';
 };
 
-window.saveUserEdit = async (id) => {
-    const full_name = document.getElementById(`edit-name-${id}`).value;
-    const email = document.getElementById(`edit-email-${id}`).value;
-    const dept_id = document.getElementById(`edit-dept-${id}`).value || null;
-    const role = document.getElementById(`edit-role-${id}`).value;
+window.saveUserEditModal = async () => {
+    const id = document.getElementById('edit-user-id').value;
+    const full_name = document.getElementById('edit-user-name').value;
+    const email = document.getElementById('edit-user-email').value;
+    const dept_id = document.getElementById('edit-user-dept').value || null;
+    const role = document.getElementById('edit-user-role').value;
 
-    const u = state.users.find(user => user.id === id);
+    const u = state.users.find(user => user.id == id);
 
     await fetch(`${API_BASE}/users/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+            ...u,
             full_name,
             email,
             dept_id,
-            role,
-            can_upload: u ? u.can_upload : 0
+            role
         })
     });
 
+    document.getElementById('edit-user-modal').style.display = 'none';
     loadAllData();
 };
 
@@ -909,11 +951,20 @@ function renderPersonnelPicker() {
 
     filtered.forEach(u => {
         const isSelected = selectedPickerUsers.includes(u.id);
+        const initialsHtml = `<div class="student-initial" style="width: 32px; height: 32px; font-size: 11px; flex-shrink: 0;">${u.full_name.charAt(0)}</div>`;
+        const avatarHtml = u.image_url 
+            ? `<img src="${API_BASE.replace('/api', '')}${u.image_url}" 
+                 style="width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 1px solid rgba(255,255,255,0.1); flex-shrink: 0;"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+               <div class="student-initial" style="width: 32px; height: 32px; font-size: 11px; display: none; flex-shrink: 0;">${u.full_name.charAt(0)}</div>`
+            : initialsHtml;
+
         list.innerHTML += `
             <div class="personnel-item" style="display: flex; align-items: center; gap: 15px; padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.05);">
                 <input type="checkbox" class="picker-checkbox" value="${u.id}" ${isSelected ? 'checked' : ''} 
                     onchange="togglePickerUser(${u.id}, this.checked)"
                     style="width: 18px; height: 18px; cursor: pointer;">
+                ${avatarHtml}
                 <div style="flex: 1;">
                     <div style="font-weight: 500; font-size: 14px;">${u.full_name}</div>
                     <div class="text-muted" style="font-size: 11px;">${getFullDeptPath(u.dept_id)} • ${u.role || 'No Role'}</div>
@@ -1042,22 +1093,25 @@ async function renderAttendanceLogs() {
 
         let html = '';
         users.forEach(u => {
-            // Calculate percentage
             const userLogs = state.attendance.filter(log => log.user_id === u.id && log.activity_name === activity.name);
-            
-            // For a real calculation we'd need total sessions, let's mock or use a heuristic
-            // In a real app we'd fetch this from the summary endpoint.
-            // Let's assume 100% if they have logs, or just show count.
-            // Wait, I created a summary endpoint in server.js earlier.
-            
-            const totalSessions = 10; // Mock for now or fetch
+            const totalSessions = 10; // Mock
             const present = userLogs.length;
             const percentage = ((present / totalSessions) * 100);
             const pctStr = percentage.toFixed(1);
 
+            const initialsHtml = `<div class="student-initial">${u.full_name.charAt(0)}</div>`;
+            const avatarHtml = u.image_url 
+                ? `<img src="${API_BASE.replace('/api', '')}${u.image_url}" 
+                     class="student-initial" style="object-fit: cover;"
+                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                   <div class="student-initial" style="display: none;">${u.full_name.charAt(0)}</div>`
+                : initialsHtml;
+
             html += `
                 <div class="student-card" onclick="openUserAnalytics(${u.id}, ${activityId})" style="cursor: pointer;">
-                    <div class="student-initial">${u.full_name.charAt(0)}</div>
+                    <div style="position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;">
+                        ${avatarHtml}
+                    </div>
                     <div class="student-info">
                         <span class="student-name">${u.full_name}</span>
                         <span class="student-role">${u.role || 'Personnel'}</span>
@@ -1157,7 +1211,21 @@ window.openUserAnalytics = (userId, initialActivityId) => {
 
     document.getElementById('user-analytics-name').innerText = user.full_name;
     document.getElementById('user-analytics-role').innerText = user.role || 'Personnel';
-    document.getElementById('user-analytics-initial').innerText = user.full_name.charAt(0);
+    
+    const initialBox = document.getElementById('user-analytics-initial');
+    if (user.image_url) {
+        initialBox.innerHTML = `
+            <img src="${API_BASE.replace('/api', '')}${user.image_url}" 
+                 style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;"
+                 onerror="this.style.display='none'; this.parentElement.innerText='${user.full_name.charAt(0)}'; this.parentElement.style.background='rgba(255, 255, 255, 0.1)';">
+        `;
+        initialBox.style.background = 'transparent';
+        initialBox.style.border = '1px solid var(--glass-border)';
+    } else {
+        initialBox.innerText = user.full_name.charAt(0);
+        initialBox.style.background = 'rgba(255, 255, 255, 0.1)';
+        initialBox.style.display = 'flex'; // Ensure it's showing
+    }
 
     // Populate Subject Selector
     const userSchedules = state.timetable.filter(t => t.user_ids && t.user_ids.split(',').includes(userId.toString()));
@@ -1250,6 +1318,12 @@ function renderUserAnalyticsLogs(userId, activityId) {
                     ${isPresent ? 'PRESENT' : 'ABSENT'}
                 </div>
                 <div style="font-size: 10px; color: var(--text-muted); margin-top: 5px;">${session.timeRange}</div>
+                ${isPresent && (log.entry_time || log.exit_time) ? `
+                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); font-size: 10px; display: flex; flex-direction: column; gap: 2px;">
+                        ${log.entry_time ? `<div style="color: var(--success); opacity: 0.8;">In: ${log.entry_time.substring(0, 5)}</div>` : ''}
+                        ${log.exit_time ? `<div style="color: var(--warning); opacity: 0.8;">Out: ${log.exit_time.substring(0, 5)}</div>` : ''}
+                    </div>
+                ` : ''}
             </div>
         `;
     });
@@ -1389,7 +1463,14 @@ async function generateIndividualReport(userId, _) {
             doc.text(isPresent ? 'PRESENT' : 'ABSENT', xPos + 2, currentY + 10);
             
             doc.setTextColor(100, 116, 139);
-            doc.text(session.timeRange, xPos + 2, currentY + 14);
+            if (isPresent && (log.entry_time || log.exit_time)) {
+                let times = [];
+                if (log.entry_time) times.push(`In: ${log.entry_time.substring(0, 5)}`);
+                if (log.exit_time) times.push(`Out: ${log.exit_time.substring(0, 5)}`);
+                doc.text(times.join(' | '), xPos + 2, currentY + 14);
+            } else {
+                doc.text(session.timeRange, xPos + 2, currentY + 14);
+            }
 
             xPos += boxWidth + spacing;
         });
@@ -1423,12 +1504,16 @@ function renderUploadPermissions() {
 
     // Users
     const authUsers = state.users.filter(u => u.can_upload);
-    usersContainer.innerHTML = authUsers.length ? authUsers.map(u => `
-        <div class="chip">
-            <span>${u.full_name}</span>
-            <span class="material-symbols-rounded remove-btn" onclick="toggleUserUploadPermission(${u.id}, false)">close</span>
-        </div>
-    `).join('') : '<div class="text-muted" style="font-size: 13px; text-align: center; width: 100%; padding-top: 50px;">No specific users assigned.</div>';
+    usersContainer.innerHTML = authUsers.length ? authUsers.map(u => {
+        const avatarSrc = u.image_url ? `${API_BASE.replace('/api', '')}${u.image_url}` : null;
+        return `
+            <div class="chip" style="padding-left: 5px;">
+                ${avatarSrc ? `<img src="${avatarSrc}" style="width: 20px; height: 20px; border-radius: 50%; margin-right: 8px; object-fit: cover;">` : ''}
+                <span>${u.full_name}</span>
+                <span class="material-symbols-rounded remove-btn" onclick="toggleUserUploadPermission(${u.id}, false)">close</span>
+            </div>
+        `;
+    }).join('') : '<div class="text-muted" style="font-size: 13px; text-align: center; width: 100%; padding-top: 50px;">No specific users assigned.</div>';
 }
 
 window.toggleUserUploadPermission = async (userId, status) => {

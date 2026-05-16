@@ -77,6 +77,7 @@ class NodeRoleProvider with ChangeNotifier {
       
       // Trigger background automation to pick up the new test schedule
       final automation = SessionAutomationService();
+      await automation.cancelAllSessions(); // Clear existing normal alarms
       await automation.scheduleNextSessionIfNeeded(
           testTasks.cast<Map<String, dynamic>>(), _currentUserNode?.id.toString() ?? '', isRootNode);
           

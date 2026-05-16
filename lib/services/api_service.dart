@@ -1,9 +1,32 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_node.dart';
 import '../core/api_config.dart';
+import 'database_service.dart';
 
 class ApiService {
+  final DatabaseService _db = DatabaseService();
+
+  /// Generic fetch with caching
+  Future<dynamic> _fetchWithCache(String path, {bool forceRefresh = false}) async {
+    final cacheKey = path;
+    
+    // Try network first
+    try {
+      final response = await http.get(Uri.parse('${ApiConfig.baseUrl}$path'));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        await _db.saveCache(cacheKey, data);
+        return data;
+      }
+    } catch (e) {
+      print('Network error for $path: $e. Falling back to cache.');
+    }
+
+    // Fallback to cache
+    return await _db.getCache(cacheKey);
+  }
 
   /// Login with email and password to the Node.js/MySQL backend
   Future<UserNode?> login(String email, String password) async {
@@ -46,11 +69,14 @@ class ApiService {
   }
 
   /// Sync attendance: POST to /attendance with timetable_id, user_id, marked_by, date
-  Future<void> syncAttendanceRecord(
+  Future<bool> syncAttendanceRecord(
       int timetableId,
       int userId,
       int markedById,
-      String date) async {
+      String date, {
+      String? entryTime,
+      String? exitTime,
+  }) async {
     try {
       final response = await http.post(
         Uri.parse('${ApiConfig.baseUrl}/attendance'),
@@ -60,66 +86,72 @@ class ApiService {
           'user_id': userId,
           'marked_by': markedById,
           'date': date,
+          if (entryTime != null) 'entry_time': entryTime,
+          if (exitTime != null) 'exit_time': exitTime,
         }),
       );
 
       if (response.statusCode == 200) {
         print('Attendance sync successful.');
+        return true;
       } else {
-        throw Exception('Failed to sync. Server responded: ${response.body}');
+        print('Failed to sync. Server responded: ${response.body}');
+        return false;
       }
     } catch (e) {
       print('Attendance sync failed via API: $e');
-      rethrow;
+      return false;
     }
   }
 
   /// Fetch overall attendance percentage for the dashboard
   Future<double> fetchDashboardStats(String userId) async {
-    try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/dashboard_stats/$userId'),
-      );
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return double.tryParse(data['attendance_percentage'].toString()) ?? 0.0;
-      }
-    } catch (e) {
-      print('Error fetching stats: $e');
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('is_test_mode') ?? false) {
+      return 100.0;
+    }
+
+    final data = await _fetchWithCache('/dashboard_stats/$userId');
+    if (data != null) {
+      return double.tryParse(data['attendance_percentage'].toString()) ?? 0.0;
     }
     return 0.0;
   }
 
-  /// Fetch timetable entries assigned to a specific user
-  /// Returns list of maps with keys: id, activity_name, time_range, target_node_name, day_of_week
   Future<List<Map<String, dynamic>>> fetchUserTimetable(String userId) async {
-    try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/user_timetable/$userId'),
-      );
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
-        return data.cast<Map<String, dynamic>>();
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('is_test_mode') ?? false) {
+      final tasksJson = prefs.getString('test_mode_tasks');
+      if (tasksJson != null) {
+        return (jsonDecode(tasksJson) as List<dynamic>).cast<Map<String, dynamic>>();
       }
-    } catch (e) {
-      print('Error fetching timetable: $e');
+    }
+
+    final data = await _fetchWithCache('/user_timetable/$userId');
+    if (data != null) {
+      return (data as List<dynamic>).cast<Map<String, dynamic>>();
     }
     return [];
   }
 
-  /// Fetch attendance history (past records) for a user
-  /// Returns list of maps with keys: date, activity_name, time_range, status
   Future<List<Map<String, dynamic>>> fetchAttendanceHistory(String userId) async {
-    try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/attendance_history/$userId'),
-      );
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
-        return data.cast<Map<String, dynamic>>();
-      }
-    } catch (e) {
-      print('Error fetching attendance history: $e');
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('is_test_mode') ?? false) {
+      return [
+        {
+          'id': 9901,
+          'activity_name': 'Test Activity 1',
+          'department': 'Test Dept',
+          'date': DateTime.now().toIso8601String().split('T')[0],
+          'entry_time': DateTime.now().subtract(const Duration(minutes: 9)).toIso8601String(),
+          'exit_time': DateTime.now().subtract(const Duration(minutes: 6)).toIso8601String(),
+        }
+      ];
+    }
+
+    final data = await _fetchWithCache('/attendance_history/$userId');
+    if (data != null) {
+      return (data as List<dynamic>).cast<Map<String, dynamic>>();
     }
     return [];
   }
@@ -128,16 +160,24 @@ class ApiService {
   /// Returns list with: timetable_id, activity_name, time_range,
   ///   total_sessions, user_present, all_dates (List<String>), present_dates (List<String>)
   Future<List<Map<String, dynamic>>> fetchAttendanceSummary(String userId) async {
-    try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/attendance_summary/$userId'),
-      );
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
-        return data.cast<Map<String, dynamic>>();
-      }
-    } catch (e) {
-      print('Error fetching attendance summary: $e');
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('is_test_mode') ?? false) {
+      return [
+        {
+          'timetable_id': 9901,
+          'activity_name': 'Test Activity 1',
+          'time_range': 'Test',
+          'total_sessions': 1,
+          'user_present': 1,
+          'all_dates': [DateTime.now().toIso8601String().split('T')[0]],
+          'present_dates': [DateTime.now().toIso8601String().split('T')[0]],
+        }
+      ];
+    }
+
+    final data = await _fetchWithCache('/attendance_summary/$userId');
+    if (data != null) {
+      return (data as List<dynamic>).cast<Map<String, dynamic>>();
     }
     return [];
   }
@@ -145,15 +185,9 @@ class ApiService {
   /// Fetch all personnel assigned to a specific timetable/schedule slot
   /// Returns map with key 'members' containing list of user objects
   Future<Map<String, dynamic>?> fetchScheduleMembers(int scheduleId) async {
-    try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/schedule_members/$scheduleId'),
-      );
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
-      }
-    } catch (e) {
-      print('Error fetching schedule members: $e');
+    final data = await _fetchWithCache('/schedule_members/$scheduleId');
+    if (data != null) {
+      return data as Map<String, dynamic>;
     }
     return null;
   }
@@ -228,7 +262,7 @@ class ApiService {
     try {
       final response = await http
           .get(Uri.parse('${ApiConfig.baseUrl}/health'))
-          .timeout(const Duration(seconds: 3));
+          .timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final connected = data['database'] == 'connected';
@@ -239,5 +273,58 @@ class ApiService {
       print('Health Check Failed: $e');
     }
     return false;
+  }
+
+  /// Fetch DB status (cloud vs local)
+  Future<String> fetchDbStatus() async {
+    try {
+      final response = await http
+          .get(Uri.parse('${ApiConfig.baseUrl}/db-status'))
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data['mode'] ?? 'unknown';
+      }
+    } catch (e) {
+      print('Error fetching DB status: $e');
+    }
+    return 'offline';
+  }
+
+  /// Grant temporary upload power to another user for a specific schedule and today's date
+  Future<bool> grantTemporaryPower(int targetUserId, int timetableId, int grantorId) async {
+    try {
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/grant_temporary_power'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'user_id': targetUserId,
+          'timetable_id': timetableId,
+          'granted_by': grantorId,
+        }),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      print('Error granting temporary power: $e');
+      return false;
+    }
+  }
+
+  /// Revoke temporary upload power from another user for a specific schedule and today's date
+  Future<bool> revokeTemporaryPower(int targetUserId, int timetableId) async {
+    try {
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/revoke_temporary_power'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'user_id': targetUserId,
+          'timetable_id': timetableId,
+        }),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      print('Error revoking temporary power: $e');
+      return false;
+    }
   }
 }

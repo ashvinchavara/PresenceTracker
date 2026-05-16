@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/api_service.dart';
+import '../../services/test_service.dart';
 import '../../providers/node_role_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
@@ -43,16 +44,49 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
   }
 
   Future<void> _fetchData() async {
-    final userId =
-        Provider.of<NodeRoleProvider>(context, listen: false).currentUserNode?.id ?? '';
+    final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
+    final userId = userProvider.currentUserNode?.id ?? '';
     
-    final summaryData = await _apiService.fetchAttendanceSummary(userId);
-    final timetableData = await _apiService.fetchUserTimetable(userId);
+    List<Map<String, dynamic>> summaryData = [];
+    List<Map<String, dynamic>> timetableData = [];
+
+    if (userProvider.isTestMode) {
+      timetableData = TestService().getTestActivities();
+      summaryData = [
+        {
+          'activity_name': 'Test Activity 1',
+          'total_sessions': 1,
+          'user_present': 1,
+          'all_dates': [DateFormat('yyyy-MM-dd').format(DateTime.now().subtract(const Duration(days: 1)))],
+          'present_dates': [DateFormat('yyyy-MM-dd').format(DateTime.now().subtract(const Duration(days: 1)))],
+          'sessions': [
+            {
+              'date': DateFormat('yyyy-MM-dd').format(DateTime.now().subtract(const Duration(days: 1))),
+              'is_present': true,
+              'time_range': timetableData[0]['time_range'],
+              'entry_time': '10:00:00',
+              'exit_time': '11:00:00',
+            }
+          ]
+        },
+        {
+          'activity_name': 'Test Activity 2',
+          'total_sessions': 1,
+          'user_present': 0,
+          'all_dates': [DateFormat('yyyy-MM-dd').format(DateTime.now())],
+          'present_dates': [],
+          'sessions': []
+        }
+      ];
+    } else {
+      summaryData = List<Map<String, dynamic>>.from(await _apiService.fetchAttendanceSummary(userId));
+      timetableData = List<Map<String, dynamic>>.from(await _apiService.fetchUserTimetable(userId));
+    }
 
     if (mounted) {
       setState(() {
-        _summary = List<Map<String, dynamic>>.from(summaryData);
-        _timetable = List<Map<String, dynamic>>.from(timetableData);
+        _summary = summaryData;
+        _timetable = timetableData;
         _isLoading = false;
         _selectedDay = DateTime.now();
         
@@ -170,11 +204,29 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
+      body: Column(
         children: [
-          _buildCalendarView(_currentActivityData),
-          ..._summary.map((act) => _buildCalendarView(act)),
+          if (Provider.of<NodeRoleProvider>(context).isTestMode)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              color: Colors.orange,
+              child: const Center(
+                child: Text(
+                  'YOU ARE ON TEST MODE (Displaying Simulated Data)',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+              ),
+            ),
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                _buildCalendarView(_currentActivityData),
+                ..._summary.map((act) => _buildCalendarView(act)),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -363,15 +415,21 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
         ),
         ...filteredActivities.map((act) {
         final activitySummary = _summary.firstWhere(
-          (s) => s['activity_name'] == act['activity_name'],
+          (s) => s['activity_name'].toString().trim().toUpperCase() == act['activity_name'].toString().trim().toUpperCase(),
           orElse: () => {},
         );
 
         final List<String> presentDates = List<String>.from(activitySummary['present_dates'] ?? []);
         final List<String> allDates = List<String>.from(activitySummary['all_dates'] ?? []);
 
-        final bool hasRecord = allDates.contains(dateStr);
-        final bool isPresent = presentDates.contains(dateStr);
+        final List<dynamic> sessions = List<dynamic>.from(activitySummary['sessions'] ?? []);
+        final session = sessions.firstWhere(
+          (s) => (s['session_date'] ?? s['date']) == dateStr && s['time_range'] == act['time_range'],
+          orElse: () => null,
+        );
+
+        final bool hasRecord = session != null;
+        final bool isPresent = session?['is_present'] == true;
         
         String statusText = isFuture ? 'Upcoming' : 'Absent';
         Color statusColor = isFuture ? primaryColor : Colors.red;
@@ -433,8 +491,8 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
                       ),
                     ),
                     Text(
-                      act['time_range'] ?? '',
-                      style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 12),
+                      "Schedule: ${act['time_range']}\nActual: ${_formatTime12h(session?['entry_time'])} - ${_formatTime12h(session?['exit_time'])}",
+                      style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 11),
                     ),
                   ],
                 ),
@@ -445,5 +503,27 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
       }).toList(),
     ],
   );
+}
+
+String _formatTime12h(dynamic timeStr) {
+  if (timeStr == null || timeStr.toString().isEmpty || timeStr == '--:--') return '--:--';
+  try {
+    String str = timeStr.toString();
+    // Handle ISO strings like 1970-01-01T14:30:00.000Z
+    if (str.contains('T')) {
+      str = str.split('T')[1].split('.')[0]; 
+    }
+    
+    final parts = str.split(':');
+    if (parts.length < 2) return str;
+    int hour = int.parse(parts[0]);
+    int minute = int.parse(parts[1]);
+    final ampm = hour >= 12 ? 'PM' : 'AM';
+    hour = hour % 12;
+    if (hour == 0) hour = 12;
+    return "${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')} $ampm";
+  } catch (e) {
+    return timeStr.toString();
+  }
 }
 }

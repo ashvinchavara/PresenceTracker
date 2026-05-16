@@ -83,6 +83,22 @@ class ReportService {
     );
   }
 
+  static String _formatTime12h(dynamic timeStr) {
+    if (timeStr == null || timeStr.toString().isEmpty || timeStr == '--:--') return '--:--';
+    try {
+      final parts = timeStr.toString().split(':');
+      if (parts.length < 2) return timeStr.toString();
+      int hour = int.parse(parts[0]);
+      int minute = int.parse(parts[1]);
+      final ampm = hour >= 12 ? 'PM' : 'AM';
+      hour = hour % 12;
+      if (hour == 0) hour = 12;
+      return "${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')} $ampm";
+    } catch (e) {
+      return timeStr.toString();
+    }
+  }
+
   static pw.Widget _buildActivitySection(Map<String, dynamic> activity) {
     final activityName = activity['activity_name'] ?? 'Unknown Activity';
     final dynamic sessionsData = activity['sessions'];
@@ -93,7 +109,6 @@ class ReportService {
     }
 
     if (sessions.isEmpty) {
-      // Fallback to all_dates/present_dates if sessions is missing
       final List<dynamic> allDates = activity['all_dates'] ?? [];
       final List<dynamic> presentDates = activity['present_dates'] ?? [];
       if (allDates.isNotEmpty) {
@@ -111,97 +126,110 @@ class ReportService {
     final int present = (activity['user_present'] as num? ?? sessions.where((s) => s['is_present'] == true).length).toInt();
     final double percentage = total > 0 ? (present / total) * 100 : 0.0;
 
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
+    // Use pw.Wrap to ensure the header and grid stay on the same page (Wrap doesn't break)
+    return pw.Wrap(
       children: [
-        // Activity Header
-        pw.Container(
-          padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: const pw.BoxDecoration(
-            color: PdfColors.grey100,
-          ),
-          width: double.infinity,
-          child: pw.Row(
-            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-            children: [
-              pw.Text(
-                activityName,
-                style: pw.TextStyle(
-                  fontSize: 12,
-                  fontWeight: pw.FontWeight.bold,
-                  color: PdfColors.blueGrey900,
-                ),
-              ),
-              pw.Text(
-                '${percentage.toStringAsFixed(1)}% ($present/$total)',
-                style: pw.TextStyle(
-                  fontSize: 10,
-                  fontWeight: pw.FontWeight.bold,
-                  color: PdfColors.blueGrey700,
-                ),
-              ),
-            ],
-          ),
-        ),
-        pw.SizedBox(height: 10),
-
-        // Grid of sessions
-        pw.Wrap(
-          spacing: 5,
-          runSpacing: 5,
-          children: sessions.map((session) {
-            final dateStr = session['date'] ?? '';
-            if (dateStr.isEmpty) return pw.SizedBox();
-
-            DateTime date;
-            try {
-               date = DateTime.parse(dateStr);
-            } catch (e) {
-               return pw.SizedBox();
-            }
-
-            final isPresent = session['is_present'] == true || session['is_present'] == 1;
-            final timeRange = session['time_range'] ?? '';
-            
-            return pw.Container(
-              width: 100,
-              padding: const pw.EdgeInsets.all(5),
-              decoration: pw.BoxDecoration(
-                border: pw.Border.all(color: PdfColors.grey300),
-                color: isPresent ? PdfColors.green50 : PdfColors.red50,
-              ),
-              child: pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  pw.Text(
-                    DateFormat('MMM d, yyyy').format(date),
-                    style: pw.TextStyle(
-                      fontSize: 8,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
+        pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        mainAxisSize: pw.MainAxisSize.min,
+        children: [
+          // Activity Header
+          pw.Container(
+            padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: const pw.BoxDecoration(
+              color: PdfColors.grey100,
+            ),
+            width: double.infinity,
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text(
+                  activityName,
+                  style: pw.TextStyle(
+                    fontSize: 12,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.blueGrey900,
                   ),
-                  pw.Text(
-                    isPresent ? 'PRESENT' : 'ABSENT',
-                    style: pw.TextStyle(
-                      fontSize: 8,
-                      color: isPresent ? PdfColors.green : PdfColors.red,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
+                ),
+                pw.Text(
+                  '${percentage.toStringAsFixed(1)}% ($present/$total)',
+                  style: pw.TextStyle(
+                    fontSize: 10,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.blueGrey700,
                   ),
-                  if (timeRange.toString().isNotEmpty)
+                ),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 10),
+
+          // Grid of sessions
+          pw.Wrap(
+            spacing: 4,
+            runSpacing: 4,
+            children: sessions.map((session) {
+              final dateStr = session['date'] ?? '';
+              if (dateStr.isEmpty) return pw.SizedBox();
+
+              DateTime date;
+              try {
+                 date = DateTime.parse(dateStr);
+              } catch (e) {
+                 return pw.SizedBox();
+              }
+
+              final isPresent = session['is_present'] == true || session['is_present'] == 1;
+              final timeRange = session['time_range'] ?? '';
+              
+              // Entry/Exit Formatting
+              final entryTime = _formatTime12h(session['entry_time']);
+              final exitTime = _formatTime12h(session['exit_time']);
+              final displayTime = (isPresent && entryTime != '--:--') 
+                  ? "$entryTime - $exitTime" 
+                  : timeRange.toString();
+
+              return pw.Container(
+                width: 78, // Reduced from 100 to fit more items
+                padding: const pw.EdgeInsets.all(4),
+                decoration: pw.BoxDecoration(
+                  border: pw.Border.all(color: PdfColors.grey300, width: 0.5),
+                  color: isPresent ? PdfColors.green50 : PdfColors.red50,
+                ),
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
                     pw.Text(
-                      timeRange.toString(),
-                      style: const pw.TextStyle(
+                      DateFormat('MMM d, yyyy').format(date),
+                      style: pw.TextStyle(
                         fontSize: 7,
-                        color: PdfColors.grey600,
+                        fontWeight: pw.FontWeight.bold,
                       ),
                     ),
-                ],
-              ),
-            );
-          }).toList(),
-        ),
-      ],
-    );
-  }
+                    pw.Text(
+                      isPresent ? 'PRESENT' : 'ABSENT',
+                      style: pw.TextStyle(
+                        fontSize: 7,
+                        color: isPresent ? PdfColors.green : PdfColors.red,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
+                    ),
+                    if (displayTime.isNotEmpty)
+                      pw.Text(
+                        displayTime,
+                        style: const pw.TextStyle(
+                          fontSize: 6,
+                          color: PdfColors.grey600,
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    ],
+  );
+}
 }

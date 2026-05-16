@@ -185,34 +185,25 @@
                             </button>
                         </div>
                     </div>
-                    <div class="table-container">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th style="width: 40px; text-align: center;">
-                                        <input type="checkbox" id="assignment-select-all"
-                                            onclick="toggleAllAssignments(this.checked)">
-                                    </th>
-                                    <th>Staff Member</th>
-                                    <th class="sortable-th" onclick="window.sortAssignments('sub_dept_name')"
-                                        id="sort-th-node">
-                                        Strategic Node <span class="material-symbols-rounded sort-icon"
-                                            id="sort-icon-node" style="font-size: 16px;">unfold_more</span>
-                                    </th>
-                                    <th class="sortable-th" onclick="window.sortAssignments('role_name')"
-                                        id="sort-th-role">
-                                        Designated Role <span class="material-symbols-rounded sort-icon"
-                                            id="sort-icon-role" style="font-size: 16px;">unfold_more</span>
-                                    </th>
-                                    <th class="text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="assignments-table-body">
-                                <tr>
-                                    <td colspan="4" class="loading-text">Retrieving assignment logs...</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                    <div id="personnel-folders-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin-bottom: 40px;">
+                        <!-- Node folders will be injected here -->
+                    </div>
+
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px;">
+                        <h3 id="current-node-selection-title" style="font-size: 18px;">All Personnel</h3>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn-primary" id="btn-delete-all-node" onclick="deleteAllInNode()" style="display: none; background: rgba(239, 68, 68, 0.1); border: 1px solid var(--danger); color: var(--danger); padding: 8px 15px; font-size: 13px;">
+                                <span class="material-symbols-rounded" style="font-size: 18px;">delete_forever</span> Delete All in Node
+                            </button>
+                            <button class="btn-icon" onclick="resetPersonnelView()" id="btn-reset-view" style="display: none;">
+                                <span class="material-symbols-rounded">undo</span> Show All
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="assignments-grid-body" class="student-card-grid">
+                        <!-- User cards will be injected here -->
+                        <div class="loading-text" style="grid-column: 1 / -1;">Retrieving personnel data...</div>
                     </div>
                 </div>
             </section>
@@ -611,6 +602,38 @@
                     style="max-height: 450px; overflow-y: auto;">
                     <!-- Session logs will be populated here -->
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit User Modal -->
+    <div id="edit-user-modal" class="modal-overlay">
+        <div class="modal-content glass-panel" style="max-width: 450px;">
+            <div class="modal-header">
+                <h3>Edit Personnel</h3>
+                <button class="btn-icon" onclick="document.getElementById('edit-user-modal').style.display='none'">
+                    <span class="material-symbols-rounded">close</span>
+                </button>
+            </div>
+            <div class="modal-body" style="padding: 25px;">
+                <input type="hidden" id="edit-user-id">
+                <div class="input-group">
+                    <label>Full Name</label>
+                    <input type="text" id="edit-user-name" class="custom-input">
+                </div>
+                <div class="input-group">
+                    <label>Email Address</label>
+                    <input type="email" id="edit-user-email" class="custom-input">
+                </div>
+                <div class="input-group">
+                    <label>Strategic Node</label>
+                    <select id="edit-user-dept" class="custom-input"></select>
+                </div>
+                <div class="input-group">
+                    <label>Designated Role</label>
+                    <input type="text" id="edit-user-role" class="custom-input">
+                </div>
+                <button class="btn-primary" onclick="saveUserEditModal()" style="width: 100%; margin-top: 10px;">Save Changes</button>
             </div>
         </div>
     </div>

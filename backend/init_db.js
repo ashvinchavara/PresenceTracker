@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS attendance (
     status TEXT DEFAULT 'Present',
     present_count INTEGER DEFAULT 0,
     recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    entry_time TEXT,
+    exit_time TEXT,
     FOREIGN KEY (timetable_assignment_id) REFERENCES timetable_assignments(id) ON DELETE CASCADE
 );
 `;

@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.db
+*.sql
+migration_log.txt
+SQL_GUIDE.md

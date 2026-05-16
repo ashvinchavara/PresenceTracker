@@ -1503,3 +1503,20 @@ input:checked + .slider:before {
 
 .status-dot.present { background: var(--success); }
 .status-dot.absent { background: var(--danger); }
+
+/* --- Folder Cards --- */
+.folder-card {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.folder-card:hover {
+    background: rgba(255, 255, 255, 0.05);
+    transform: translateY(-4px);
+    border-color: var(--primary) !important;
+}
+
+.folder-card.active {
+    background: rgba(99, 102, 241, 0.1);
+    border-color: var(--primary) !important;
+    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
+}

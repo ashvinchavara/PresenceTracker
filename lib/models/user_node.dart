@@ -8,6 +8,7 @@ class UserNode {
   final String desig;      // role field from MySQL users table
   final bool canUpload;    // can_upload field from MySQL users table
   final bool isBiometricVerified;
+  final String? imageUrl;
 
   UserNode({
     required this.id,
@@ -19,6 +20,7 @@ class UserNode {
     required this.desig,
     this.canUpload = false,
     this.isBiometricVerified = false,
+    this.imageUrl,
   });
 
   /// Maps directly from the MySQL `users` row (with dept_name joined)
@@ -33,6 +35,7 @@ class UserNode {
       desig: data['role'] ?? data['desig'] ?? 'Student',
       canUpload: (data['can_upload'] == 1 || data['can_upload'] == true),
       isBiometricVerified: data['isBiometricVerified'] ?? false,
+      imageUrl: data['image_url'],
     );
   }
 
@@ -47,6 +50,7 @@ class UserNode {
       'dept_name': department,
       'can_upload': canUpload ? 1 : 0,
       'isBiometricVerified': isBiometricVerified,
+      'image_url': imageUrl,
     };
   }
 }

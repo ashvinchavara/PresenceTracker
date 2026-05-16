@@ -110,48 +110,84 @@ class _AuthScreenState extends State<AuthScreen> {
     if (_isDialogShowing) return;
     _isDialogShowing = true;
 
-    final TextEditingController ipController = TextEditingController(text: ApiConfig.baseUrl.replaceAll('http://', '').replaceAll(':3000/api', ''));
+    final TextEditingController ipController = TextEditingController(text: ApiConfig.currentIp);
     
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Server Configuration'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('Enter the IP address of the backend server:'),
-            const SizedBox(height: 10),
-            TextField(
-              controller: ipController,
-              decoration: const InputDecoration(
-                labelText: 'IPv4 Address or Domain',
-                hintText: 'e.g., 192.168.1.3',
-                border: OutlineInputBorder(),
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Connection Settings'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Select connection mode:'),
+              const SizedBox(height: 15),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: ApiConfig.isCloudMode ? const Color(0xFF0078D4) : Colors.grey,
+                      ),
+                      onPressed: () {
+                        setState(() => ApiConfig.isCloudMode = true);
+                      },
+                      child: const Text('Cloud (Primary)'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: !ApiConfig.isCloudMode ? const Color(0xFF0078D4) : Colors.grey,
+                      ),
+                      onPressed: () {
+                        setState(() => ApiConfig.isCloudMode = false);
+                      },
+                      child: const Text('Local Fallback'),
+                    ),
+                  ),
+                ],
               ),
+              if (!ApiConfig.isCloudMode) ...[
+                const SizedBox(height: 20),
+                const Text('Enter Local Backend IP:'),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: ipController,
+                  decoration: const InputDecoration(
+                    labelText: 'Local IPv4',
+                    hintText: 'e.g., 192.168.1.7',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx), 
+              child: const Text('Cancel')
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (ApiConfig.isCloudMode) {
+                  await ApiConfig.switchToCloud();
+                } else {
+                  await ApiConfig.switchToLocal(ipController.text.trim());
+                }
+                
+                if (mounted) {
+                  Navigator.pop(ctx);
+                  final connected = await _apiService.checkHealth();
+                  this.setState(() => _isConnected = connected);
+                }
+              },
+              child: const Text('Connect & Save'),
             ),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () async {
-              String newIp = ipController.text.trim();
-              if (newIp.isNotEmpty) {
-                await ApiConfig.updateBaseUrl(newIp);
-                if (mounted) {
-                   setState(() {
-                      _isConnected = false;
-                   });
-                   Navigator.pop(ctx);
-                   _apiService.checkHealth().then((connected) {
-                      if (mounted) setState(() => _isConnected = connected);
-                   });
-                }
-              }
-            },
-            child: const Text('Save'),
-          ),
-        ],
       ),
     ).then((_) => _isDialogShowing = false);
   }
@@ -161,6 +197,13 @@ class _AuthScreenState extends State<AuthScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Presence Tracker Login'),
+        actions: [
+          IconButton(
+            icon: Icon(ApiConfig.isCloudMode ? Icons.cloud_circle : Icons.settings_ethernet),
+            tooltip: 'Connection Settings',
+            onPressed: _showSettingsDialog,
+          ),
+        ],
       ),
       body: Center(
         child: SingleChildScrollView(
@@ -176,10 +219,14 @@ class _AuthScreenState extends State<AuthScreen> {
                     height: 12,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: _isConnected ? Colors.green : Colors.red,
+                      color: _isConnected 
+                        ? (ApiConfig.isCloudMode ? Colors.green : Colors.orange) 
+                        : Colors.red,
                       boxShadow: [
                         BoxShadow(
-                          color: (_isConnected ? Colors.green : Colors.red).withOpacity(0.5),
+                          color: (_isConnected 
+                            ? (ApiConfig.isCloudMode ? Colors.green : Colors.orange) 
+                            : Colors.red).withOpacity(0.5),
                           blurRadius: 4,
                           spreadRadius: 2,
                         )
@@ -188,9 +235,11 @@ class _AuthScreenState extends State<AuthScreen> {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    _isConnected ? 'Connected to Adtendo' : 'Offline / Error',
+                    _isConnected 
+                      ? (ApiConfig.isCloudMode ? 'Live Cloud Active' : 'Local Fallback: ${ApiConfig.currentIp}')
+                      : 'Offline / Server Unreachable',
                     style: TextStyle(
-                      color: _isConnected ? Colors.green : Colors.red,
+                      color: _isConnected ? (ApiConfig.isCloudMode ? Colors.green : Colors.orange) : Colors.red,
                       fontWeight: FontWeight.bold,
                       fontSize: 12,
                     ),

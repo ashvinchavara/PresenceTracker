@@ -7,6 +7,7 @@ import 'screens/auth/auth_screen.dart';
 import 'core/api_config.dart';
 
 import 'screens/dashboard/root_dashboard.dart';
+import 'services/notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -14,6 +15,7 @@ void main() async {
   // Initialize services
   await AndroidAlarmManager.initialize();
   await ApiConfig.init();
+  await NotificationService().init();
   
   // Initialize session
   final roleProvider = NodeRoleProvider();

@@ -4,6 +4,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:percent_indicator/circular_percent_indicator.dart';
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../../providers/node_role_provider.dart';
 import '../../providers/theme_provider.dart';
 import '../../services/api_service.dart';
@@ -14,6 +16,8 @@ import './full_timetable_screen.dart';
 import '../../services/ble_mesh_service.dart';
 import '../../services/session_automation_service.dart';
 import '../../core/api_config.dart';
+import '../../services/test_service.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 
 class RootDashboard extends StatefulWidget {
@@ -32,37 +36,97 @@ class _RootDashboardState extends State<RootDashboard> {
   String _displayDay = 'Today';
   bool _isLoading = true;
 
-  // --- SIMULATION STATE ---
-  int _simCountdown = 0;
-  String _simStage = ''; // 'waiting', 'active', ''
-  Timer? _simTimer;
-  // -----------------------
-
+  // --- MESH & AUTOMATION STATE ---
   bool _isMeshActive = false;
   String _meshTaskId = '';
   Map<String, Map<String, int>> _rootAggregatedData = {};
+  Map<String, dynamic>? _currentAlarm;
   Timer? _uiSyncTimer;
 
-  bool _isConnected = false;
+  // --- CONNECTIVITY STATE ---
+  bool _isConnected = true;
+  String _dbMode = 'cloud';
+  bool _hasAutoShownDialog = false;
   bool _isDialogShowing = false;
   Timer? _healthCheckTimer;
-  Map<String, dynamic>? _currentAlarm;
+
+  // --- TEST MODE STATE ---
+  String _testStage = 'none'; // 'none', 'waiting', 'active', 'uploading', 'verifying', 'finished'
+  int _testCountdown = 0;
+  Timer? _testTimer;
+  List<Map<String, dynamic>> _testActivities = [];
   final SessionAutomationService _automationService = SessionAutomationService();
+
+  // Legacy simulation variables (mapped to test mode)
+  String get _simStage => _testStage;
+  int get _simCountdown => _testCountdown;
 
   @override
   void initState() {
     super.initState();
     _fetchDashboardData();
     _startHealthPolling();
+    _requestPermissions();
     _uiSyncTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       _loadMeshState();
     });
+    _testTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      _updateTestModeTimer();
+    });
+  }
+
+  void _updateTestModeTimer() {
+    if (!mounted) return;
+    final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
+    if (!userProvider.isTestMode) return;
+
+    if (_currentAlarm != null) {
+      final now = DateTime.now();
+      if (_currentAlarm!['status'] == 'scheduled') {
+         final start = DateTime.tryParse(_currentAlarm!['start_time']) ?? now;
+         _testStage = 'waiting';
+         _testCountdown = start.difference(now).inSeconds;
+      } else if (_currentAlarm!['status'] == 'active') {
+         final end = DateTime.tryParse(_currentAlarm!['end_time']) ?? now;
+         _testStage = 'active';
+         _testCountdown = end.difference(now).inSeconds;
+      }
+      if (_testCountdown < 0) _testCountdown = 0;
+      setState(() {});
+    } else {
+      _testStage = 'finished';
+      _testCountdown = 0;
+      setState(() {});
+    }
+  }
+
+  Future<void> _requestPermissions() async {
+    // Request critical permissions for background operations
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.notification,
+      Permission.bluetoothScan,
+      Permission.bluetoothAdvertise,
+      Permission.bluetoothConnect,
+      Permission.location,
+    ].request();
+    
+    if (statuses[Permission.notification]?.isPermanentlyDenied ?? false) {
+      print('Dashboard: Notification permission permanently denied. Opening settings.');
+      await openAppSettings();
+    } else if (statuses[Permission.notification]?.isDenied ?? false) {
+      print('Dashboard: Notification permission denied');
+    }
+    
+    // Also check battery optimization
+    if (await Permission.ignoreBatteryOptimizations.isDenied) {
+      await Permission.ignoreBatteryOptimizations.request();
+    }
   }
 
   @override
   void dispose() {
     _uiSyncTimer?.cancel();
-    _simTimer?.cancel();
+    _testTimer?.cancel();
     _healthCheckTimer?.cancel();
     super.dispose();
   }
@@ -98,9 +162,60 @@ class _RootDashboardState extends State<RootDashboard> {
         _currentAlarm = alarm;
       });
       
-      if (alarm != null && alarm['notified'] == false) {
+      if (alarm != null && (alarm['notified'] ?? false) == false) {
         _showAlarmPopup(alarm);
       }
+    }
+  }
+
+  void _startTestMode() {
+    final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
+    userProvider.setTestMode(true);
+    _fetchDashboardData();
+  }
+
+  void _endTestMode() {
+    final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
+    userProvider.setTestMode(false);
+    _fetchDashboardData();
+  }
+
+  void _skipTestPhase() async {
+    final prefs = await SharedPreferences.getInstance();
+    final tasksJson = prefs.getString('test_mode_tasks');
+    if (tasksJson == null) return;
+    
+    List<dynamic> tasks = jsonDecode(tasksJson);
+    final now = DateTime.now();
+    bool changed = false;
+
+    for (var task in tasks) {
+      DateTime start = DateTime.parse(task['start_time']);
+      DateTime end = DateTime.parse(task['end_time']);
+      
+      // If waiting for this task to start, fast-forward to start
+      if (now.isBefore(start)) {
+        final duration = end.difference(start);
+        task['start_time'] = now.toIso8601String();
+        task['end_time'] = now.add(duration).toIso8601String();
+        changed = true;
+        break;
+      } 
+      // If currently active, fast-forward to end
+      else if (now.isAfter(start) && now.isBefore(end)) {
+        task['end_time'] = now.subtract(const Duration(seconds: 1)).toIso8601String();
+        changed = true;
+        break;
+      }
+    }
+
+    if (changed) {
+      await prefs.setString('test_mode_tasks', jsonEncode(tasks));
+      final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
+      final automation = SessionAutomationService();
+      await automation.scheduleNextSessionIfNeeded(
+          tasks.cast<Map<String, dynamic>>(), userProvider.currentUserNode?.id.toString() ?? '', userProvider.isRootNode);
+      _updateTestModeTimer();
     }
   }
 
@@ -160,19 +275,33 @@ class _RootDashboardState extends State<RootDashboard> {
 
   void _startHealthPolling() {
     // Initial check
-    _apiService.checkHealth().then((connected) {
+    _apiService.checkHealth().then((connected) async {
+      final mode = connected ? await _apiService.fetchDbStatus() : 'offline';
       if (mounted) {
-        setState(() => _isConnected = connected);
-        if (!connected) _showSettingsDialog();
+        setState(() {
+          _isConnected = connected;
+          _dbMode = mode;
+          if (connected) _hasAutoShownDialog = false;
+        });
+        if (!connected && !_hasAutoShownDialog) {
+          _hasAutoShownDialog = true;
+          _showSettingsDialog();
+        }
       }
     });
     
     // Poll every 10 seconds
     _healthCheckTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
       final connected = await _apiService.checkHealth();
+      final mode = connected ? await _apiService.fetchDbStatus() : 'offline';
       if (mounted) {
-        setState(() => _isConnected = connected);
-        if (!connected && !_isDialogShowing) {
+        setState(() {
+          _isConnected = connected;
+          _dbMode = mode;
+          if (connected) _hasAutoShownDialog = false;
+        });
+        if (!connected && !_isDialogShowing && !_hasAutoShownDialog) {
+          _hasAutoShownDialog = true;
           _showSettingsDialog();
         }
       }
@@ -209,54 +338,86 @@ class _RootDashboardState extends State<RootDashboard> {
     if (_isDialogShowing) return;
     _isDialogShowing = true;
 
-    final TextEditingController ipController = TextEditingController(
-      text: ApiConfig.baseUrl.replaceAll('http://', '').replaceAll(':3000/api', '')
-    );
+    final TextEditingController ipController = TextEditingController(text: ApiConfig.currentIp);
     
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Server Configuration'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('Connection lost. Please enter the backend IP:'),
-            const SizedBox(height: 10),
-            TextField(
-              controller: ipController,
-              decoration: const InputDecoration(
-                labelText: 'IPv4 Address',
-                hintText: 'e.g., 192.168.1.7',
-                border: OutlineInputBorder(),
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Connection Settings'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Select connection mode:'),
+              const SizedBox(height: 15),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: ApiConfig.isCloudMode ? const Color(0xFF0078D4) : Colors.grey,
+                      ),
+                      onPressed: () {
+                        setState(() => ApiConfig.isCloudMode = true);
+                      },
+                      child: const Text('Cloud (Primary)'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: !ApiConfig.isCloudMode ? const Color(0xFF0078D4) : Colors.grey,
+                      ),
+                      onPressed: () {
+                        setState(() => ApiConfig.isCloudMode = false);
+                      },
+                      child: const Text('Local Fallback'),
+                    ),
+                  ),
+                ],
               ),
+              if (!ApiConfig.isCloudMode) ...[
+                const SizedBox(height: 20),
+                const Text('Enter Local Backend IP:'),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: ipController,
+                  decoration: const InputDecoration(
+                    labelText: 'Local IPv4',
+                    hintText: 'e.g., 192.168.1.7',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx), 
+              child: const Text('Cancel')
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (ApiConfig.isCloudMode) {
+                  await ApiConfig.switchToCloud();
+                } else {
+                  await ApiConfig.switchToLocal(ipController.text.trim());
+                }
+                
+                if (mounted) {
+                  Navigator.pop(ctx);
+                  final connected = await _apiService.checkHealth();
+                  this.setState(() => _isConnected = connected);
+                  if (connected) _fetchDashboardData();
+                }
+              },
+              child: const Text('Connect & Save'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-            }, 
-            child: const Text('Later')
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              String newIp = ipController.text.trim();
-              if (newIp.isNotEmpty) {
-                await ApiConfig.updateBaseUrl(newIp);
-                if (mounted) {
-                   Navigator.pop(ctx);
-                   _apiService.checkHealth().then((connected) {
-                      if (mounted) setState(() => _isConnected = connected);
-                   });
-                }
-              }
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      )
+      ),
     ).then((_) => _isDialogShowing = false);
   }
 
@@ -268,6 +429,7 @@ class _RootDashboardState extends State<RootDashboard> {
     }
 
     final now = DateTime.now();
+
     final dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
     final todayName = dayNames[now.weekday - 1];
 
@@ -308,7 +470,10 @@ class _RootDashboardState extends State<RootDashboard> {
     for (int i = 1; i < 7; i++) {
       final nextDayIndex = (now.weekday - 1 + i) % 7;
       final nextDayName = dayNames[nextDayIndex];
-      final nextTasks = tasks.where((t) => t['day_of_week'] == nextDayName).toList();
+      final nextTasks = tasks.where((t) {
+        final days = (t['day_of_week'] as String?)?.split(',') ?? [];
+        return days.contains(nextDayName);
+      }).toList();
       
       if (nextTasks.isNotEmpty) {
         sortTasks(nextTasks);
@@ -363,6 +528,12 @@ class _RootDashboardState extends State<RootDashboard> {
                     }
 
                     final members = snapshot.data!['members'] as List<dynamic>;
+                    members.sort((a, b) {
+                      final aPower = (a['has_upload_power'] == 1 || a['has_upload_power'] == true) ? 1 : 0;
+                      final bPower = (b['has_upload_power'] == 1 || b['has_upload_power'] == true) ? 1 : 0;
+                      if (aPower != bPower) return bPower.compareTo(aPower);
+                      return (a['full_name'] ?? '').compareTo(b['full_name'] ?? '');
+                    });
                     return ListView.builder(
                       controller: controller,
                       itemCount: members.length,
@@ -370,6 +541,9 @@ class _RootDashboardState extends State<RootDashboard> {
                         final m = members[idx];
                         final dynamic rawPower = m['has_upload_power'];
                         final bool hasPower = rawPower == 1 || rawPower == true;
+                        final bool isTemp = m['is_temporarily_granted'] == 1 || m['is_temporarily_granted'] == true;
+                        final bool canManage = Provider.of<NodeRoleProvider>(context, listen: false).currentUserNode?.canUpload == true;
+
                         return Container(
                           margin: const EdgeInsets.only(bottom: 8),
                           decoration: BoxDecoration(
@@ -380,15 +554,87 @@ class _RootDashboardState extends State<RootDashboard> {
                           child: ListTile(
                             leading: CircleAvatar(
                               backgroundColor: hasPower ? const Color(0xFF0078D4) : Colors.grey.withOpacity(0.2),
-                              child: Icon(hasPower ? Icons.verified : Icons.person, 
-                                color: hasPower ? Colors.white : Colors.grey),
+                              backgroundImage: m['image_url'] != null
+                                ? CachedNetworkImageProvider("${ApiConfig.baseUrl.replaceAll('/api', '')}${m['image_url']}")
+                                : null,
+                              child: m['image_url'] == null 
+                                ? Icon(hasPower ? (isTemp ? Icons.shield : Icons.verified) : Icons.person, 
+                                    color: hasPower ? Colors.white : Colors.grey)
+                                : null,
                             ),
                             title: Text(m['full_name'] ?? 'Unknown', 
                               style: TextStyle(fontWeight: hasPower ? FontWeight.bold : FontWeight.normal)),
                             subtitle: Text("${m['role_name']} (${m['department_name']})"),
-                            trailing: hasPower 
-                              ? const Text("Uploader", style: TextStyle(color: Color(0xFF0078D4), fontWeight: FontWeight.bold, fontSize: 12)) 
-                              : null,
+                            trailing: canManage
+                              ? (isTemp
+                                ? IconButton(
+                                    icon: const Icon(Icons.shield, color: Color(0xFF0078D4), size: 20),
+                                    tooltip: 'Revoke Temporary Power',
+                                    onPressed: () async {
+                                      final bool? confirm = await showDialog<bool>(
+                                        context: context,
+                                        builder: (ctx) => AlertDialog(
+                                          title: const Text("Revoke Power"),
+                                          content: Text("Revoke temporary upload power from ${m['full_name']}?"),
+                                          actions: [
+                                            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
+                                            ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Revoke")),
+                                          ],
+                                        ),
+                                      );
+                                      if (confirm == true) {
+                                        final success = await _apiService.revokeTemporaryPower(m['id'], scheduleId);
+                                        if (success && mounted) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(content: Text("Temporary power revoked."))
+                                          );
+                                          Navigator.pop(context); // Close bottom sheet
+                                          _showScheduleDetails(task); // Re-open to refresh
+                                        }
+                                      }
+                                    },
+                                  )
+                                : (hasPower
+                                  ? const Text("Uploader", style: TextStyle(color: Color(0xFF0078D4), fontWeight: FontWeight.bold, fontSize: 12))
+                                  : IconButton(
+                                      icon: const Icon(Icons.shield_outlined, size: 20),
+                                      tooltip: 'Grant Temporary Power',
+                                      onPressed: () async {
+                                        final bool? confirm = await showDialog<bool>(
+                                          context: context,
+                                          builder: (ctx) => AlertDialog(
+                                            title: const Text("Delegate Power"),
+                                            content: Text("Grant temporary upload power to ${m['full_name']} for this activity today?"),
+                                            actions: [
+                                              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
+                                              ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Grant")),
+                                            ],
+                                          ),
+                                        );
+                                        if (confirm == true) {
+                                          final grantorId = Provider.of<NodeRoleProvider>(context, listen: false).currentUserNode?.id;
+                                          if (grantorId != null) {
+                                            final success = await _apiService.grantTemporaryPower(
+                                              m['id'], 
+                                              scheduleId, 
+                                              int.parse(grantorId)
+                                            );
+                                            if (success && mounted) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                SnackBar(content: Text("Power granted to ${m['full_name']} for today."))
+                                              );
+                                              Navigator.pop(context);
+                                              _showScheduleDetails(task);
+                                            }
+                                          }
+                                        }
+                                      },
+                                    )
+                                  )
+                                )
+                              : (hasPower 
+                                  ? const Text("Uploader", style: TextStyle(color: Color(0xFF0078D4), fontWeight: FontWeight.bold, fontSize: 12))
+                                  : null),
                           ),
                         );
                       },
@@ -455,26 +701,46 @@ class _RootDashboardState extends State<RootDashboard> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            const Text('Dashboard'),
-            const SizedBox(width: 8),
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: _isConnected ? Colors.green : Colors.red,
-                boxShadow: [
-                  BoxShadow(
-                    color: (_isConnected ? Colors.green : Colors.red).withOpacity(0.5),
-                    blurRadius: 4,
-                    spreadRadius: 2,
-                  )
-                ],
-              ),
+        title: InkWell(
+          onTap: _showSettingsDialog,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Dashboard'),
+                const SizedBox(width: 8),
+                if (Provider.of<NodeRoleProvider>(context).isTestMode)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    margin: const EdgeInsets.only(right: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.orange,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text('TEST', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                  ),
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _dbMode == 'cloud' 
+                        ? Colors.green 
+                        : (_dbMode == 'local' ? Colors.orange : Colors.red),
+                    boxShadow: [
+                      BoxShadow(
+                        color: (_dbMode == 'cloud' ? Colors.green : (_dbMode == 'local' ? Colors.orange : Colors.red)).withOpacity(0.5),
+                        blurRadius: 4,
+                        spreadRadius: 2,
+                      )
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
         elevation: 0,
         actions: [
@@ -493,9 +759,14 @@ class _RootDashboardState extends State<RootDashboard> {
               decoration: const BoxDecoration(color: Color(0xFF0078D4)),
               accountName: Text(Provider.of<NodeRoleProvider>(context).currentUserNode?.name ?? 'User'),
               accountEmail: Text(Provider.of<NodeRoleProvider>(context).currentUserNode?.email ?? ''),
-              currentAccountPicture: const CircleAvatar(
+              currentAccountPicture: CircleAvatar(
                 backgroundColor: Colors.white,
-                child: Icon(Icons.person, color: Color(0xFF0078D4), size: 40),
+                backgroundImage: Provider.of<NodeRoleProvider>(context).currentUserNode?.imageUrl != null
+                  ? CachedNetworkImageProvider("${ApiConfig.baseUrl.replaceAll('/api', '')}${Provider.of<NodeRoleProvider>(context).currentUserNode!.imageUrl}")
+                  : null,
+                child: Provider.of<NodeRoleProvider>(context).currentUserNode?.imageUrl == null
+                  ? const Icon(Icons.person, color: Color(0xFF0078D4), size: 40)
+                  : null,
               ),
             ),
             ListTile(
@@ -528,64 +799,86 @@ class _RootDashboardState extends State<RootDashboard> {
             ),
             const Spacer(),
             const Divider(),
-            ListTile(
-              leading: Icon(Icons.bug_report, color: _simStage != '' ? Colors.grey : Colors.orange),
-              title: Text(_simStage == 'waiting' ? 'Simulation Starting in ${_simCountdown}s' : 'Run BLE Simulation'),
-              subtitle: Text(_simStage == 'active' ? 'Simulation Active (ends in ${_simCountdown}s)' : 'Start next session in 1 min'),
-              enabled: _simStage == '',
-              onTap: () {
-                if (_upcomingTasks.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No upcoming tasks to simulate.')));
-                  return;
+            Consumer<NodeRoleProvider>(
+              builder: (context, userProvider, child) {
+                if (!userProvider.isTestMode) {
+                  return ListTile(
+                    leading: const Icon(Icons.bug_report, color: Colors.grey),
+                    title: const Text('Enable Test Mode'),
+                    subtitle: const Text('Test entire app flow'),
+                    onTap: () {
+                      _startTestMode();
+                      Navigator.pop(context);
+                    },
+                  );
                 }
-                
-                final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
-                final task = Map<String, dynamic>.from(_upcomingTasks.first);
-                
-                setState(() {
-                  _simStage = 'waiting';
-                  _simCountdown = 60;
-                });
 
-                _simTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-                   if (mounted) {
-                     setState(() {
-                       _simCountdown--;
-                       if (_simCountdown <= 0) {
-                         if (_simStage == 'waiting') {
-                            // Transition to ACTIVE
-                            _simStage = 'active';
-                            _simCountdown = 120; // 2 minutes
-                            
-                            // Trigger BLE Mesh
-                            final BleMeshService bleService = BleMeshService();
-                            bleService.initializeMeshNode(
-                              userProvider.canUpload ? 'root' : 'leaf', 
-                              task['id'].toString(), 
-                              userProvider.currentUserNode!.id, 
-                              task['activity_name'] ?? 'Session'
-                            );
-                         } else {
-                            // Finish Simulation
-                            _simStage = '';
-                            _simCountdown = 0;
-                            timer.cancel();
-                            
-                            // Trigger End and Sync
-                            final BleMeshService bleService = BleMeshService();
-                            bleService.endMeshTask(userProvider.canUpload ? 'root' : 'leaf');
-                         }
-                       }
-                     });
-                   }
-                });
+                String title = '';
+                switch (_testStage) {
+                  case 'waiting': title = 'Next Activity'; break;
+                  case 'active': title = 'Activity Active'; break;
+                  case 'finished': title = 'Test Finished'; break;
+                  default: title = 'Processing...'; break;
+                }
 
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    backgroundColor: Colors.orange,
-                    content: Text('Simulation Started! Look at the dashboard for countdown.'),
-                  )
+                return Container(
+                  margin: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                  ),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.science, color: Colors.orange),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                Text(
+                                  "${(_testCountdown ~/ 60).toString().padLeft(2, '0')}:${(_testCountdown % 60).toString().padLeft(2, '0')}",
+                                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.orange),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _skipTestPhase,
+                              style: OutlinedButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                side: const BorderSide(color: Colors.orange),
+                                foregroundColor: Colors.orange,
+                              ),
+                              child: const Text('Skip'),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _endTestMode,
+                              style: OutlinedButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                side: const BorderSide(color: Colors.red),
+                                foregroundColor: Colors.red,
+                              ),
+                              child: const Text('Cancel'),
+                            ),
+                          ),
+                        ],
+                      )
+                    ],
+                  ),
                 );
               },
             ),
@@ -618,6 +911,7 @@ class _RootDashboardState extends State<RootDashboard> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+
                   if (_isMeshActive) _buildActiveMeshIndicator(),
                   Center(
                     child: InkWell(
@@ -660,19 +954,20 @@ class _RootDashboardState extends State<RootDashboard> {
                         _displayDay == 'None' ? 'Upcoming Tasks' : _displayDay,
                         style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                       ),
-                      TextButton(
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (_) => const FullTimetableScreen()),
-                          );
-                        },
-                        child: const Text('View Full'),
-                      ),
+                      if (!Provider.of<NodeRoleProvider>(context).isTestMode)
+                        TextButton(
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => const FullTimetableScreen()),
+                            );
+                          },
+                          child: const Text('View Full'),
+                        ),
                     ],
                   ),
                   const Divider(),
-                  _upcomingTasks.isEmpty 
+                  _upcomingTasks.isEmpty && !Provider.of<NodeRoleProvider>(context).isTestMode
                     ? const Padding(
                         padding: EdgeInsets.all(20.0),
                         child: Text("No tasks found for the near future.", style: TextStyle(color: Colors.grey)),
@@ -680,131 +975,10 @@ class _RootDashboardState extends State<RootDashboard> {
                     : ListView.builder(
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
-                        itemCount: _upcomingTasks.length,
+                        itemCount: Provider.of<NodeRoleProvider>(context).isTestMode ? _testActivities.length : _upcomingTasks.length,
                         itemBuilder: (context, index) {
-                          final task = _upcomingTasks[index];
-                          final bool isTargeted = _currentAlarm != null && _currentAlarm!['task_id'].toString() == task['id'].toString();
-                          final bool isActive = isTargeted && _currentAlarm!['status'] == 'active';
-                          final Color statusColor = isActive ? Colors.green : (isTargeted ? const Color(0xFF0078D4) : Colors.grey);
-                          final onSurface = Theme.of(context).colorScheme.onSurface;
-
-                          return GestureDetector(
-                            onTap: () => _showScheduleDetails(task),
-                            child: Container(
-                              margin: const EdgeInsets.only(bottom: 15),
-                              padding: const EdgeInsets.all(20),
-                              decoration: BoxDecoration(
-                                color: onSurface.withOpacity(0.05),
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(
-                                  color: statusColor.withOpacity(0.3),
-                                  width: isActive ? 2 : 1,
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  // Left side: Green dot if active, Alarm if targeted, Donut if neither
-                                  SizedBox(
-                                    width: 40,
-                                    height: 40,
-                                    child: isActive 
-                                      ? Center(
-                                          child: Container(
-                                            width: 12,
-                                            height: 12,
-                                            decoration: BoxDecoration(
-                                              shape: BoxShape.circle,
-                                              color: Colors.green,
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  color: Colors.green.withOpacity(0.5),
-                                                  blurRadius: 8,
-                                                  spreadRadius: 4,
-                                                )
-                                              ],
-                                            ),
-                                          ),
-                                        )
-                                      : isTargeted
-                                        ? Icon(Icons.notifications_active, color: statusColor, size: 28)
-                                        : Stack(
-                                            alignment: Alignment.center,
-                                            children: [
-                                              CircularProgressIndicator(
-                                                value: _getActivityPercentage(task['activity_name']),
-                                                strokeWidth: 4,
-                                                backgroundColor: statusColor.withOpacity(0.1),
-                                                valueColor: AlwaysStoppedAnimation<Color>(
-                                                  _getActivityPercentage(task['activity_name']) >= 0.75 ? Colors.green :
-                                                  (_getActivityPercentage(task['activity_name']) >= 0.5 ? Colors.orange : Colors.red)
-                                                ),
-                                              ),
-                                              Text(
-                                                "${(_getActivityPercentage(task['activity_name']) * 100).toInt()}%",
-                                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
-                                              ),
-                                            ],
-                                          ),
-                                  ),
-                                  const SizedBox(width: 15),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          task['activity_name'] ?? 'Task',
-                                          style: TextStyle(
-                                            color: onSurface,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 16,
-                                          ),
-                                        ),
-                                        if (isActive || isTargeted) ...[
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            isActive ? 'Session Active' : 'Upcoming',
-                                            style: TextStyle(
-                                              color: statusColor,
-                                              fontWeight: FontWeight.w600,
-                                              fontSize: 14,
-                                            ),
-                                          ),
-                                        ],
-                                        Text(
-                                          "${task['time_range'] ?? 'Unknown Time'} • ${task['target_node_name'] ?? ''}",
-                                          style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 12),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  // Right side: Donut if active or targeted
-                                  if (isActive || isTargeted)
-                                    SizedBox(
-                                      width: 32,
-                                      height: 32,
-                                      child: Stack(
-                                        alignment: Alignment.center,
-                                        children: [
-                                          CircularProgressIndicator(
-                                            value: _getActivityPercentage(task['activity_name']),
-                                            strokeWidth: 3,
-                                            backgroundColor: statusColor.withOpacity(0.1),
-                                            valueColor: AlwaysStoppedAnimation<Color>(
-                                              _getActivityPercentage(task['activity_name']) >= 0.75 ? Colors.green :
-                                              (_getActivityPercentage(task['activity_name']) >= 0.5 ? Colors.orange : Colors.red)
-                                            ),
-                                          ),
-                                          Text(
-                                            "${(_getActivityPercentage(task['activity_name']) * 100).toInt()}%",
-                                            style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          );
+                          final task = Provider.of<NodeRoleProvider>(context).isTestMode ? _testActivities[index] : _upcomingTasks[index];
+                          return _buildTaskItem(task);
                         },
                       ),
                 ],
@@ -813,6 +987,126 @@ class _RootDashboardState extends State<RootDashboard> {
           ),
     );
   }
+
+  Widget _buildTaskItem(Map<String, dynamic> task) {
+    final bool isTest = task['is_test'] == true;
+    final bool isTargeted = _currentAlarm != null && _currentAlarm!['task_id'].toString() == task['id'].toString();
+    final bool isActive = (isTargeted && _currentAlarm!['status'] == 'active') || (isTest && _testStage == 'active' && task['id'] == 'test_2');
+    final Color statusColor = isActive ? Colors.green : (isTargeted ? const Color(0xFF0078D4) : (isTest ? Colors.orange : Colors.grey));
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+
+    return GestureDetector(
+      onTap: () => isTest ? null : _showScheduleDetails(task),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 15),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: onSurface.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: statusColor.withOpacity(0.3),
+            width: isActive ? 2 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 40,
+              height: 40,
+              child: isActive 
+                ? Center(
+                    child: Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.green,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.green.withOpacity(0.5),
+                            blurRadius: 8,
+                            spreadRadius: 4,
+                          )
+                        ],
+                      ),
+                    ),
+                  )
+                : isTargeted
+                  ? Icon(Icons.notifications_active, color: statusColor, size: 28)
+                  : isTest 
+                    ? const Icon(Icons.science, color: Colors.orange, size: 28)
+                    : Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          CircularProgressIndicator(
+                            value: _getActivityPercentage(task['activity_name']),
+                            strokeWidth: 4,
+                            backgroundColor: statusColor.withOpacity(0.1),
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              _getActivityPercentage(task['activity_name']) >= 0.75 ? Colors.green :
+                              (_getActivityPercentage(task['activity_name']) >= 0.5 ? Colors.orange : Colors.red)
+                            ),
+                          ),
+                          Text(
+                            "${(_getActivityPercentage(task['activity_name']) * 100).toInt()}%",
+                            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+            ),
+            const SizedBox(width: 15),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(task['activity_name'] ?? 'Session', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  if (isActive || isTargeted) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      isActive ? 'Session Active' : 'Upcoming',
+                      style: TextStyle(
+                        color: statusColor,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                  Text(
+                    "${task['time_range'] ?? 'Unknown Time'} • ${task['target_node_name'] ?? ''}",
+                    style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            if (isActive || isTargeted)
+              SizedBox(
+                width: 32,
+                height: 32,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    CircularProgressIndicator(
+                      value: _getActivityPercentage(task['activity_name']),
+                      strokeWidth: 3,
+                      backgroundColor: statusColor.withOpacity(0.1),
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        _getActivityPercentage(task['activity_name']) >= 0.75 ? Colors.green :
+                        (_getActivityPercentage(task['activity_name']) >= 0.5 ? Colors.orange : Colors.red)
+                      ),
+                    ),
+                    Text(
+                      "${(_getActivityPercentage(task['activity_name']) * 100).toInt()}%",
+                      style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showChangePasswordDialog(BuildContext context) {
     final TextEditingController passwordController = TextEditingController();
     final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
