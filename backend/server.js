@@ -2,18 +2,71 @@ const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
-const pool = mysql.createPool({
+const cloudConfig = {
+    host: 'mysql-38c028d2-ashvinchavara-adtendo.h.aivencloud.com',
+    port: 14316,
+    user: 'avnadmin',
+    password: 'AVNS_yu3jeNWMM5zc7aL7EIl',
+    database: 'adtendo',
+    ssl: { rejectUnauthorized: false },
+    waitForConnections: true,
+    connectionLimit: 10,
+    connectTimeout: 5000 // 5 seconds timeout for cloud
+};
+
+const localConfig = {
     host: '127.0.0.1',
     user: 'root',
     password: '1021',
     database: 'adtendo',
     waitForConnections: true,
     connectionLimit: 10
-});
+};
+
+let pool;
+let isCloud = false;
+
+async function initializeDatabase() {
+    try {
+        console.log('🚀 Attempting to connect to Aiven Cloud MySQL...');
+        const tempPool = mysql.createPool(cloudConfig);
+        const conn = await tempPool.getConnection();
+        conn.release();
+        pool = tempPool;
+        isCloud = true;
+        console.log('✅ Connected to Aiven Cloud MySQL.');
+    } catch (err) {
+        console.error('❌ Cloud DB connection failed, falling back to Local MySQL...');
+        pool = mysql.createPool(localConfig);
+        isCloud = false;
+    }
+
+    // Run Migrations
+    try {
+        const [columns] = await pool.query('SHOW COLUMNS FROM attendance');
+        const hasEntry = columns.some(c => c.Field === 'entry_time');
+        const hasExit = columns.some(c => c.Field === 'exit_time');
+
+        if (!hasEntry) {
+            await pool.query('ALTER TABLE attendance ADD COLUMN entry_time TIME NULL');
+            console.log('✅ Added entry_time column to attendance table.');
+        }
+        if (!hasExit) {
+            await pool.query('ALTER TABLE attendance ADD COLUMN exit_time TIME NULL');
+            console.log('✅ Added exit_time column to attendance table.');
+        }
+    } catch (migErr) {
+        console.error('⚠️ Migration warning:', migErr.message);
+    }
+}
+
+initializeDatabase();
 
 // --- Helper: Get or Create Role ID ---
 async function getOrCreateRoleId(roleName) {
@@ -36,10 +89,36 @@ async function getOrCreateActivityId(activityName) {
 app.use(cors());
 app.use(bodyParser.json());
 
+// Profile Images Path
+const IMAGES_DIR = path.join(__dirname, 'images');
+app.use('/images', express.static(IMAGES_DIR));
+
+function getUserImageUrl(userId) {
+    const extensions = ['.jpg', '.png', '.jpeg', '.JPG', '.PNG'];
+    for (const ext of extensions) {
+        const filePath = path.join(IMAGES_DIR, `image-${userId}${ext}`);
+        if (fs.existsSync(filePath)) {
+            console.log(`Image found for user ${userId}: ${filePath}`);
+            return `/images/image-${userId}${ext}`;
+        }
+    }
+    console.log(`No image found for user ${userId} in ${IMAGES_DIR}`);
+    return null;
+}
+
 // Logging middleware
 app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url} [DB: ${isCloud ? 'Cloud' : 'Local'}]`);
     next();
+});
+
+// DB Status Endpoint
+app.get('/api/db-status', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        mode: isCloud ? 'cloud' : 'local',
+        host: isCloud ? cloudConfig.host : localConfig.host
+    });
 });
 
 // --- 1. Departments (Recursive Hierarchy) ---
@@ -114,7 +193,13 @@ app.get('/api/users', async (req, res) => {
             LEFT JOIN roles r ON u.role_id = r.id
         `;
         const [rows] = await pool.query(query);
-        res.json(rows);
+        
+        const usersWithImages = rows.map(u => ({
+            ...u,
+            image_url: getUserImageUrl(u.id)
+        }));
+        
+        res.json(usersWithImages);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -274,18 +359,29 @@ app.get('/api/attendance', async (req, res) => {
             LEFT JOIN departments d ON t.dept_id = d.id
         `;
         const [rows] = await pool.query(query);
-        res.json(rows);
+        
+        const rowsWithImages = rows.map(r => ({
+            ...r,
+            image_url: getUserImageUrl(r.user_id)
+        }));
+        
+        res.json(rowsWithImages);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
 app.post('/api/attendance', async (req, res) => {
-    const { timetable_id, user_id, marked_by, date } = req.body;
+    const { timetable_id, user_id, marked_by, date, entry_time, exit_time } = req.body;
     try {
         await pool.query(
-            'INSERT INTO attendance (timetable_id, user_id, marked_by, date) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE marked_by = VALUES(marked_by)',
-            [timetable_id, user_id, marked_by, date]
+            `INSERT INTO attendance (timetable_id, user_id, marked_by, date, entry_time, exit_time) 
+             VALUES (?, ?, ?, ?, ?, ?) 
+             ON DUPLICATE KEY UPDATE 
+                marked_by = VALUES(marked_by),
+                entry_time = IFNULL(VALUES(entry_time), entry_time),
+                exit_time = IFNULL(VALUES(exit_time), exit_time)`,
+            [timetable_id, user_id, marked_by, date, entry_time || null, exit_time || null]
         );
         res.json({ success: true });
     } catch (err) {
@@ -327,7 +423,8 @@ app.post('/api/login', async (req, res) => {
         const [rows] = await pool.query(query, [email]);
         const user = rows[0];
         if (user && (user.password_hash === password || password === '1021')) {
-            res.json({ message: "Login successful", user });
+            const userWithImage = { ...user, image_url: getUserImageUrl(user.id) };
+            res.json({ message: "Login successful", user: userWithImage });
         } else {
             res.status(401).json({ error: "Invalid credentials" });
         }
@@ -344,7 +441,12 @@ app.get('/api/health', async (req, res) => {
         await pool.query('SELECT 1');
         res.json({ status: 'ok', database: 'connected' });
     } catch (err) {
-        res.status(500).json({ status: 'error', database: 'disconnected' });
+        res.status(500).json({ 
+            status: 'error', 
+            database: 'disconnected',
+            error: err.message,
+            code: err.code
+        });
     }
 });
 
@@ -443,9 +545,11 @@ app.get('/api/attendance_summary/:userId', async (req, res) => {
             SELECT 
                 act.id as activity_id,
                 TRIM(act.name) as activity_name,
-                DATE_FORMAT(a.date, '%Y-%m-%d') as date,
+                DATE_FORMAT(a.date, '%Y-%m-%d') as session_date,
                 CONCAT(TIME_FORMAT(t.start_time, '%h:%i %p'), ' - ', TIME_FORMAT(t.end_time, '%h:%i %p')) as time_range,
                 MAX(CASE WHEN a.user_id = ? THEN 1 ELSE 0 END) as is_present,
+                MAX(CASE WHEN a.user_id = ? THEN IFNULL(TIME_FORMAT(a.entry_time, '%H:%i:%s'), 'MISSING') ELSE NULL END) as entry_time,
+                MAX(CASE WHEN a.user_id = ? THEN IFNULL(TIME_FORMAT(a.exit_time, '%H:%i:%s'), 'MISSING') ELSE NULL END) as exit_time,
                 t.start_time
             FROM attendance a
             JOIN timetable t ON a.timetable_id = t.id
@@ -456,7 +560,8 @@ app.get('/api/attendance_summary/:userId', async (req, res) => {
             GROUP BY act.id, a.date, t.id
             ORDER BY activity_name, a.date ASC, t.start_time ASC
         `;
-        const [rows] = await pool.query(query, [req.params.userId, req.params.userId]);
+        const uid = parseInt(req.params.userId);
+        const [rows] = await pool.query(query, [uid, uid, uid, uid]);
         
         const grouped = {};
         rows.forEach(r => {
@@ -470,9 +575,12 @@ app.get('/api/attendance_summary/:userId', async (req, res) => {
                 };
             }
             grouped[nameKey].sessions.push({
-                date: r.date,
+                timetable_id: r.id,
+                session_date: r.session_date,
                 time_range: r.time_range,
-                is_present: r.is_present === 1
+                is_present: r.is_present === 1,
+                entry_time: r.entry_time,
+                exit_time: r.exit_time
             });
             grouped[nameKey].all_dates.push(r.date);
             if (r.is_present === 1) {
@@ -496,16 +604,63 @@ app.get('/api/attendance_summary/:userId', async (req, res) => {
 app.get('/api/schedule_members/:scheduleId', async (req, res) => {
     try {
         const query = `
-            SELECT u.id, u.full_name, r.name as role_name, u.can_upload as has_upload_power,
-                   d.name as department_name
-            FROM timetable_users tu
-            JOIN users u ON tu.user_id = u.id
+            SELECT 
+                u.id, 
+                u.full_name, 
+                u.can_upload as base_upload_power,
+                r.name as role_name, 
+                d.name as department_name, 
+                CASE 
+                    WHEN u.can_upload = 1 THEN 1
+                    WHEN tup.user_id IS NOT NULL THEN 1
+                    ELSE 0
+                END as has_upload_power,
+                CASE WHEN tup.user_id IS NOT NULL THEN 1 ELSE 0 END as is_temporarily_granted
+            FROM users u
+            JOIN timetable_users tu ON u.id = tu.user_id
             LEFT JOIN roles r ON u.role_id = r.id
             LEFT JOIN departments d ON u.dept_id = d.id
+            LEFT JOIN temporary_upload_power tup ON u.id = tup.user_id 
+                AND tup.timetable_id = ? 
+                AND tup.date = CURDATE()
             WHERE tu.timetable_id = ?
         `;
-        const [rows] = await pool.query(query, [req.params.scheduleId]);
-        res.json({ members: rows });
+        const [rows] = await pool.query(query, [req.params.scheduleId, req.params.scheduleId]);
+        
+        const membersWithImages = rows.map(m => ({
+            ...m,
+            image_url: getUserImageUrl(m.id)
+        }));
+        
+        res.json({ members: membersWithImages });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Grant temporary upload power
+app.post('/api/grant_temporary_power', async (req, res) => {
+    const { user_id, timetable_id, granted_by } = req.body;
+    try {
+        await pool.query(
+            'INSERT INTO temporary_upload_power (user_id, timetable_id, date, granted_by) VALUES (?, ?, CURDATE(), ?) ON DUPLICATE KEY UPDATE granted_by = VALUES(granted_by)',
+            [user_id, timetable_id, granted_by]
+        );
+        res.json({ success: true, message: 'Temporary upload power granted for today.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Revoke temporary upload power
+app.post('/api/revoke_temporary_power', async (req, res) => {
+    const { user_id, timetable_id } = req.body;
+    try {
+        await pool.query(
+            'DELETE FROM temporary_upload_power WHERE user_id = ? AND timetable_id = ? AND date = CURDATE()',
+            [user_id, timetable_id]
+        );
+        res.json({ success: true, message: 'Temporary upload power revoked.' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
