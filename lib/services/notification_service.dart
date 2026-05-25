@@ -17,10 +17,7 @@ class NotificationService {
   Future<void> init() async {
     print('NOTIFICATION_SERVICE: [INIT_START]');
     
-    // Request permission explicitly for Android 13+
-    await _notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
-
-    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const android = AndroidInitializationSettings('ic_notification');
     const initSettings = InitializationSettings(android: android);
     
     try {
@@ -42,6 +39,10 @@ class NotificationService {
     } catch (e) {
       print('NOTIFICATION_SERVICE: [INIT_ERROR] $e');
     }
+  }
+
+  Future<void> requestPermissions() async {
+    await _notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
   }
 
   Future<void> _createChannels() async {
@@ -81,7 +82,8 @@ class NotificationService {
       importance: Importance.max,
       priority: Priority.high,
       ticker: 'Bluetooth is OFF',
-      icon: '@mipmap/ic_launcher',
+      icon: 'ic_notification',
+      largeIcon: DrawableResourceAndroidBitmap('ic_launcher_round'),
       category: AndroidNotificationCategory.alarm,
       audioAttributesUsage: AudioAttributesUsage.alarm,
       fullScreenIntent: true,
@@ -108,7 +110,8 @@ class NotificationService {
       priority: Priority.low,
       showWhen: true,
       ongoing: true,
-      icon: '@mipmap/ic_launcher',
+      icon: 'ic_notification',
+      largeIcon: DrawableResourceAndroidBitmap('ic_launcher_round'),
     );
     try {
       await _notifications.show(
@@ -137,7 +140,8 @@ class NotificationService {
       'Alerts',
       importance: Importance.max,
       priority: Priority.max,
-      icon: '@mipmap/ic_launcher',
+      icon: 'ic_notification',
+      largeIcon: DrawableResourceAndroidBitmap('ic_launcher_round'),
     );
     try {
       await _notifications.show(
@@ -158,7 +162,8 @@ class NotificationService {
       'Mismatch Alert',
       importance: Importance.max,
       priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
+      icon: 'ic_notification',
+      largeIcon: DrawableResourceAndroidBitmap('ic_launcher_round'),
       category: AndroidNotificationCategory.error,
     );
     try {

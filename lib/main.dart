@@ -20,6 +20,13 @@ void main() async {
   
   // Initialize foreground task communication port
   FlutterForegroundTask.initCommunicationPort();
+  FlutterForegroundTask.addTaskDataCallback((data) {
+    if (data == 'bt_alert') {
+      NotificationService().showBluetoothAlert();
+    } else if (data == 'bt_alert_clear') {
+      NotificationService().cancel(100);
+    }
+  });
   
   // Initialize session
   final roleProvider = NodeRoleProvider();
