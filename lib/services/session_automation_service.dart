@@ -1,110 +1,95 @@
 import 'dart:convert';
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'ble_mesh_service.dart';
-import 'api_service.dart';
-import 'notification_service.dart';
+import 'foreground_task_handler.dart';
+
+import 'package:flutter/widgets.dart';
 
 // --- Background Task Entry Points (Top-level) ---
 
+/// Called by AndroidAlarmManager when the session should START.
+/// Instead of running BLE directly (which fails in background isolates),
+/// we start a Foreground Service that has full plugin access.
 @pragma('vm:entry-point')
 void onSessionStart() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  print('BACKGROUND LOG: onSessionStart alarm triggered at ${DateTime.now()}');
+
   final prefs = await SharedPreferences.getInstance();
+  await prefs.reload();
   final alarmData = prefs.getString('session_alarm');
-  if (alarmData == null) return;
+  if (alarmData == null) {
+    print('BACKGROUND LOG: No session_alarm found. Aborting.');
+    return;
+  }
 
   final data = jsonDecode(alarmData);
-  final taskId = data['task_id'].toString();
-  final userId = data['user_id'].toString();
   final activityName = data['activity_name'] ?? 'Session';
-  final role = data['is_root'] == true ? 'root' : 'leaf';
 
-  // Start BLE Mesh Logic
-  final bleService = BleMeshService();
-  await bleService.initializeMeshNode(role, taskId, userId, activityName);
-
-  // Update status to active
+  // Mark as active
   data['status'] = 'active';
   await prefs.setString('session_alarm', jsonEncode(data));
-  
-  final endTime = DateTime.parse(data['end_time']);
-  
-  // 1. Schedule Pre-End Alarm (2 minutes before) for Upload
-  final uploadTime = endTime.subtract(const Duration(minutes: 2));
-  if (uploadTime.isAfter(DateTime.now())) {
-    await AndroidAlarmManager.oneShotAt(
-      uploadTime,
-      1003,
-      onPreEndUpload,
-      exact: true,
-      wakeup: true,
-    );
-  }
 
-  // 2. Schedule Verification Alarm (1 minute before)
-  final verifyTime = endTime.subtract(const Duration(minutes: 1));
-  if (verifyTime.isAfter(DateTime.now())) {
-    await AndroidAlarmManager.oneShotAt(
-      verifyTime,
-      1004,
-      onVerificationCheck,
-      exact: true,
-      wakeup: true,
-    );
-  }
+  print('BACKGROUND LOG: Starting foreground service for $activityName');
 
-  // 3. Schedule Final End Alarm
-  await AndroidAlarmManager.oneShotAt(
-    endTime,
-    1002,
-    onSessionEnd,
-    exact: true,
-    wakeup: true,
+  // Initialize the foreground task configuration
+  FlutterForegroundTask.init(
+    androidNotificationOptions: AndroidNotificationOptions(
+      channelId: 'ble_session_service',
+      channelName: 'BLE Attendance Session',
+      channelDescription: 'Running BLE scanning and advertising for attendance tracking.',
+      onlyAlertOnce: true,
+    ),
+    iosNotificationOptions: const IOSNotificationOptions(
+      showNotification: false,
+      playSound: false,
+    ),
+    foregroundTaskOptions: ForegroundTaskOptions(
+      eventAction: ForegroundTaskEventAction.repeat(10000), // Update every 10s
+      autoRunOnBoot: true,
+      autoRunOnMyPackageReplaced: true,
+      allowWakeLock: true,
+      allowWifiLock: true,
+    ),
   );
+
+  // Start the foreground service
+  final result = await FlutterForegroundTask.startService(
+    serviceId: 300,
+    notificationTitle: 'Starting: $activityName',
+    notificationText: 'Initializing BLE mesh network...',
+    callback: startForegroundCallback,
+  );
+
+  print('BACKGROUND LOG: Foreground service start result: ${result}');
 }
 
-@pragma('vm:entry-point')
-void onPreEndUpload() async {
-  final bleService = BleMeshService();
-  await bleService.uploadAttendance();
-}
-
-@pragma('vm:entry-point')
-void onVerificationCheck() async {
-  final bleService = BleMeshService();
-  await bleService.verifyAttendance();
-}
-
+/// Called by AndroidAlarmManager when the session should END.
+/// Stops the foreground service cleanly.
 @pragma('vm:entry-point')
 void onSessionEnd() async {
-  final prefs = await SharedPreferences.getInstance();
-  final alarmData = prefs.getString('session_alarm');
-  if (alarmData == null) return;
+  WidgetsFlutterBinding.ensureInitialized();
+  print('BACKGROUND LOG: onSessionEnd alarm triggered at ${DateTime.now()}');
 
-  final data = jsonDecode(alarmData);
-  final userId = data['user_id'].toString();
-  final isRoot = data['is_root'] == true;
+  // Send stop command to the foreground service
+  FlutterForegroundTask.sendDataToTask('stop');
+  
+  // Also stop the service directly as a fallback
+  await Future.delayed(const Duration(seconds: 3));
+  await FlutterForegroundTask.stopService();
 
-  final bleService = BleMeshService();
-  await bleService.endMeshTask();
-
-  // Clear current alarm
-  await prefs.remove('session_alarm');
-
-  // CHAINING: Schedule the next upcoming activity automatically
-  print('Automation: Session ended. Scheduling next...');
-  final api = ApiService();
-  final tasks = await api.fetchUserTimetable(userId);
-  final automation = SessionAutomationService();
-  await automation.scheduleNextSessionIfNeeded(tasks, userId, isRoot);
+  print('BACKGROUND LOG: Foreground service stopped.');
 }
 
 class SessionAutomationService {
   static const String _alarmKey = 'session_alarm';
   static const int _startAlarmId = 1001;
+  static const int _endAlarmId = 1002;
 
   Future<Map<String, dynamic>?> getActiveAlarm() async {
     final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
     final data = prefs.getString(_alarmKey);
     if (data == null) return null;
     return jsonDecode(data);
@@ -114,11 +99,13 @@ class SessionAutomationService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_alarmKey);
     await AndroidAlarmManager.cancel(_startAlarmId);
-    await AndroidAlarmManager.cancel(1003); 
-    await AndroidAlarmManager.cancel(1004); 
-    await AndroidAlarmManager.cancel(1005); 
+    await AndroidAlarmManager.cancel(_endAlarmId);
+    
+    // Also stop any running foreground service
+    if (await FlutterForegroundTask.isRunningService) {
+      await FlutterForegroundTask.stopService();
+    }
   }
-
 
   Future<void> scheduleNextSessionIfNeeded(List<Map<String, dynamic>> tasks, String userId, bool isRoot) async {
     final prefs = await SharedPreferences.getInstance();
@@ -151,10 +138,18 @@ class SessionAutomationService {
         final days = (task['day_of_week'] as String?)?.split(',') ?? [];
         if (!days.contains(dayName)) continue;
 
-        final timeRange = task['time_range'] as String;
-        final parts = timeRange.split(' - ');
-        final start = _parseTime(parts[0], checkDate);
-        final end = _parseTime(parts[1], checkDate);
+        DateTime start;
+        DateTime end;
+
+        if (task['is_test'] == true) {
+          start = DateTime.parse(task['start_time']);
+          end = DateTime.parse(task['end_time']);
+        } else {
+          final timeRange = task['time_range'] as String;
+          final parts = timeRange.split(' - ');
+          start = _parseTime(parts[0], checkDate);
+          end = _parseTime(parts[1], checkDate);
+        }
 
         if (start.isAfter(now)) {
           if (nextStartTime == null || start.isBefore(nextStartTime)) {
@@ -180,12 +175,15 @@ class SessionAutomationService {
         'start_time': nextStartTime.toIso8601String(),
         'end_time': nextEndTime?.toIso8601String(),
         'is_root': isRoot,
+        'is_test': nextTask['is_test'] == true,
         'status': 'scheduled',
       };
 
       await prefs.setString(_alarmKey, jsonEncode(alarmData));
 
       if (nextStartTime.isAfter(now)) {
+        // Schedule START alarm
+        print('Automation: Scheduling start alarm at $nextStartTime');
         await AndroidAlarmManager.oneShotAt(
           nextStartTime,
           _startAlarmId,
@@ -194,7 +192,22 @@ class SessionAutomationService {
           wakeup: true,
           rescheduleOnReboot: true,
         );
+
+        // Schedule END alarm (as a safety net to stop the foreground service)
+        if (nextEndTime != null) {
+          print('Automation: Scheduling end alarm at $nextEndTime');
+          await AndroidAlarmManager.oneShotAt(
+            nextEndTime,
+            _endAlarmId,
+            onSessionEnd,
+            exact: true,
+            wakeup: true,
+            rescheduleOnReboot: true,
+          );
+        }
       } else {
+        // Start immediately (session already in progress)
+        print('Automation: Session already in progress, starting foreground service now.');
         onSessionStart();
       }
     }

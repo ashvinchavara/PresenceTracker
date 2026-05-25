@@ -33,18 +33,24 @@ let pool;
 let isCloud = false;
 
 async function initializeDatabase() {
-    try {
-        console.log('🚀 Attempting to connect to Aiven Cloud MySQL...');
-        const tempPool = mysql.createPool(cloudConfig);
-        const conn = await tempPool.getConnection();
-        conn.release();
-        pool = tempPool;
+    if (process.env.RENDER || process.env.NODE_ENV === 'production') {
+        console.log('🚀 Running on Cloud Platform. Connecting to Aiven Cloud MySQL...');
+        pool = mysql.createPool(cloudConfig);
         isCloud = true;
-        console.log('✅ Connected to Aiven Cloud MySQL.');
-    } catch (err) {
-        console.error('❌ Cloud DB connection failed, falling back to Local MySQL...');
-        pool = mysql.createPool(localConfig);
-        isCloud = false;
+    } else {
+        try {
+            console.log('🚀 Attempting to connect to Local MySQL...');
+            const tempPool = mysql.createPool(localConfig);
+            const conn = await tempPool.getConnection();
+            conn.release();
+            pool = tempPool;
+            isCloud = false;
+            console.log('✅ Connected to Local MySQL.');
+        } catch (err) {
+            console.error('❌ Local DB connection failed, falling back to Aiven Cloud MySQL...');
+            pool = mysql.createPool(cloudConfig);
+            isCloud = true;
+        }
     }
 
     // Run Migrations
@@ -106,6 +112,102 @@ function getUserImageUrl(userId) {
     return null;
 }
 
+async function downloadProfileImage(userId, imageUrl) {
+    if (!imageUrl) return;
+    try {
+        let targetUrl = imageUrl.trim();
+
+        // 1. Check for Local Files (file:///... or C:\... or C:/...)
+        const isLocal = targetUrl.startsWith('file://') || /^[a-zA-Z]:[\\/]/.test(targetUrl);
+        if (isLocal) {
+            let filePath = targetUrl;
+            if (targetUrl.startsWith('file:///')) {
+                filePath = decodeURIComponent(targetUrl.replace(/^file:\/\/\//, ''));
+            } else if (targetUrl.startsWith('file://')) {
+                filePath = decodeURIComponent(targetUrl.replace(/^file:\/\//, ''));
+            } else {
+                filePath = decodeURIComponent(targetUrl);
+            }
+            
+            if (fs.existsSync(filePath)) {
+                const ext = path.extname(filePath) || '.jpg';
+                const filename = `image-${userId}${ext}`;
+                const targetPath = path.join(IMAGES_DIR, filename);
+                
+                if (!fs.existsSync(IMAGES_DIR)) {
+                    fs.mkdirSync(IMAGES_DIR, { recursive: true });
+                }
+                
+                await fs.promises.copyFile(filePath, targetPath);
+                console.log(`✅ Successfully copied local profile image from ${filePath} to ${targetPath}`);
+                return `/images/${filename}`;
+            } else {
+                throw new Error(`Local file not found at: ${filePath}`);
+            }
+        }
+
+        // 2. Check for Google Drive links
+        const driveMatch = targetUrl.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+        if (driveMatch) {
+            const fileId = driveMatch[1];
+            targetUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+            console.log(`🔄 Rewrote Google Drive link to direct download link: ${targetUrl}`);
+        }
+
+        // 3. Remote URL Download
+        console.log(`📥 Downloading image for user ${userId} from: ${targetUrl}`);
+        const response = await fetch(targetUrl);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch image: ${response.statusText}`);
+        }
+        
+        const contentType = response.headers.get('content-type') || '';
+        let ext = '.png';
+        if (contentType.includes('image/jpeg') || contentType.includes('image/jpg')) ext = '.jpg';
+        else if (contentType.includes('image/png')) ext = '.png';
+        else if (contentType.includes('image/webp')) ext = '.webp';
+        else {
+            const urlPath = new URL(targetUrl).pathname;
+            let parsedExt = path.extname(urlPath);
+            if (!parsedExt && driveMatch) {
+                parsedExt = '.jpg'; // Google Drive download defaults to jpeg
+            }
+            if (parsedExt && ['.jpg', '.png', '.jpeg', '.webp'].includes(parsedExt.toLowerCase())) {
+                ext = parsedExt;
+            }
+        }
+        
+        const buffer = Buffer.from(await response.arrayBuffer());
+        
+        if (!fs.existsSync(IMAGES_DIR)) {
+            fs.mkdirSync(IMAGES_DIR, { recursive: true });
+        }
+        
+        const filename = `image-${userId}${ext}`;
+        const targetPath = path.join(IMAGES_DIR, filename);
+        await fs.promises.writeFile(targetPath, buffer);
+        console.log(`✅ Successfully saved profile image to ${targetPath}`);
+        return `/images/${filename}`;
+    } catch (err) {
+        console.error(`⚠️ Failed to download/copy profile image for user ${userId}:`, err.message);
+    }
+}
+
+function deleteUserProfileImage(userId) {
+    const extensions = ['.jpg', '.png', '.jpeg', '.webp', '.JPG', '.PNG'];
+    for (const ext of extensions) {
+        const filePath = path.join(IMAGES_DIR, `image-${userId}${ext}`);
+        if (fs.existsSync(filePath)) {
+            try {
+                fs.unlinkSync(filePath);
+                console.log(`🗑️ Deleted profile image: ${filePath}`);
+            } catch (err) {
+                console.error(`⚠️ Failed to delete profile image ${filePath}:`, err.message);
+            }
+        }
+    }
+}
+
 // Logging middleware
 app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.url} [DB: ${isCloud ? 'Cloud' : 'Local'}]`);
@@ -119,6 +221,49 @@ app.get('/api/db-status', (req, res) => {
         mode: isCloud ? 'cloud' : 'local',
         host: isCloud ? cloudConfig.host : localConfig.host
     });
+});
+
+app.post('/api/db-status/toggle', async (req, res) => {
+    const { mode } = req.body;
+    if (mode !== 'cloud' && mode !== 'local') {
+        return res.status(400).json({ error: 'Invalid database mode' });
+    }
+    
+    console.log(`🔄 Attempting database switch to ${mode}...`);
+    try {
+        let newPool;
+        let newIsCloud;
+        if (mode === 'cloud') {
+            newPool = mysql.createPool(cloudConfig);
+            const conn = await newPool.getConnection();
+            conn.release();
+            newIsCloud = true;
+        } else {
+            newPool = mysql.createPool(localConfig);
+            const conn = await newPool.getConnection();
+            conn.release();
+            newIsCloud = false;
+        }
+        
+        // Close old pool if exists
+        const oldPool = pool;
+        pool = newPool;
+        isCloud = newIsCloud;
+        
+        if (oldPool) {
+            try {
+                await oldPool.end();
+            } catch (err) {
+                console.error('⚠️ Warning when ending old connection pool:', err.message);
+            }
+        }
+        
+        console.log(`✅ Successfully switched database to ${isCloud ? 'Cloud' : 'Local'}`);
+        res.json({ success: true, mode: isCloud ? 'cloud' : 'local' });
+    } catch (err) {
+        console.error(`❌ Switch database to ${mode} failed:`, err.message);
+        res.status(500).json({ error: `Connection failed: ${err.message}` });
+    }
 });
 
 // --- 1. Departments (Recursive Hierarchy) ---
@@ -206,27 +351,42 @@ app.get('/api/users', async (req, res) => {
 });
 
 app.post('/api/users', async (req, res) => {
-    const { full_name, email, password_hash, role, role_id, dept_id, can_upload } = req.body;
+    const { full_name, email, password_hash, role, role_id, dept_id, can_upload, image_url, imageUrl } = req.body;
     try {
         const finalRoleId = role_id || await getOrCreateRoleId(role);
         const [result] = await pool.query(
             'INSERT INTO users (full_name, email, password_hash, role_id, dept_id, can_upload) VALUES (?, ?, ?, ?, ?, ?)',
             [full_name, email, password_hash || '1021', finalRoleId, dept_id, can_upload || 0]
         );
-        res.json({ id: result.insertId });
+        const userId = result.insertId;
+        const targetImgUrl = image_url || imageUrl;
+        if (targetImgUrl) {
+            await downloadProfileImage(userId, targetImgUrl);
+        }
+        res.json({ id: userId });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
 app.put('/api/users/:id', async (req, res) => {
-    const { full_name, email, role, role_id, dept_id, can_upload } = req.body;
+    const { full_name, email, role, role_id, dept_id, can_upload, image_url, imageUrl, remove_image } = req.body;
+    const userId = req.params.id;
     try {
         const finalRoleId = role_id || await getOrCreateRoleId(role);
         await pool.query(
             'UPDATE users SET full_name = ?, email = ?, role_id = ?, dept_id = ?, can_upload = ? WHERE id = ?',
-            [full_name, email, finalRoleId, dept_id, can_upload, req.params.id]
+            [full_name, email, finalRoleId, dept_id, can_upload, userId]
         );
+        
+        const targetImgUrl = image_url || imageUrl;
+        if (remove_image) {
+            deleteUserProfileImage(userId);
+        } else if (targetImgUrl) {
+            deleteUserProfileImage(userId); // delete old extensions
+            await downloadProfileImage(userId, targetImgUrl);
+        }
+
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -235,6 +395,7 @@ app.put('/api/users/:id', async (req, res) => {
 
 app.delete('/api/users/:id', async (req, res) => {
     try {
+        deleteUserProfileImage(req.params.id);
         await pool.query('DELETE FROM users WHERE id = ?', [req.params.id]);
         res.json({ success: true });
     } catch (err) {

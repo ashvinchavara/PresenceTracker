@@ -149,6 +149,15 @@ body {
     gap: 12px;
     margin-bottom: 32px;
     border: 1px solid var(--glass-border);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    user-select: none;
+}
+
+.db-status-container:hover {
+    background: rgba(99, 102, 241, 0.1);
+    border-color: var(--primary);
+    transform: translateY(-2px);
 }
 
 .status-indicator {
@@ -1519,4 +1528,13 @@ input:checked + .slider:before {
     background: rgba(99, 102, 241, 0.1);
     border-color: var(--primary) !important;
     box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
+}
+
+.db-choice-btn:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: var(--primary) !important;
+}
+
+:root[data-theme='light'] .db-choice-btn:hover {
+    background: rgba(0, 0, 0, 0.02);
 }

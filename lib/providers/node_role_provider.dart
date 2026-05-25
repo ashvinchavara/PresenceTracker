@@ -23,52 +23,33 @@ class NodeRoleProvider with ChangeNotifier {
     if (value) {
       final now = DateTime.now();
       
-      final t1Start = now.subtract(const Duration(minutes: 10));
-      final t1End = now.subtract(const Duration(minutes: 5));
-      
-      final t2Start = now.add(const Duration(minutes: 1));
-      final t2End = t2Start.add(const Duration(minutes: 5));
-      
-      final t3Start = t2End.add(const Duration(minutes: 1));
-      final t3End = t3Start.add(const Duration(minutes: 5));
+      final t1Start = now.add(const Duration(minutes: 1));
+      final t1End = t1Start.add(const Duration(minutes: 4)); // 4 minutes total
       
       final dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
       final todayName = dayNames[now.weekday - 1];
 
       String formatTimeRange(DateTime s, DateTime e) {
-        String twoDigits(int n) => n.toString().padLeft(2, '0');
-        return "${twoDigits(s.hour)}:${twoDigits(s.minute)} - ${twoDigits(e.hour)}:${twoDigits(e.minute)}";
+        String formatTime(DateTime dt) {
+          int hour = dt.hour;
+          int minute = dt.minute;
+          String period = hour >= 12 ? 'PM' : 'AM';
+          hour = hour % 12;
+          if (hour == 0) hour = 12;
+          return "${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')} $period";
+        }
+        return "${formatTime(s)} - ${formatTime(e)}";
       }
       
       final testTasks = [
         {
           'id': 9901,
-          'activity_name': 'Test Activity 1',
+          'activity_name': 'Test Activity',
           'department': 'Test Dept',
           'start_time': t1Start.toIso8601String(),
           'end_time': t1End.toIso8601String(),
           'day_of_week': todayName,
           'time_range': formatTimeRange(t1Start, t1End),
-          'is_test': true,
-        },
-        {
-          'id': 9902,
-          'activity_name': 'Test Activity 2',
-          'department': 'Test Dept',
-          'start_time': t2Start.toIso8601String(),
-          'end_time': t2End.toIso8601String(),
-          'day_of_week': todayName,
-          'time_range': formatTimeRange(t2Start, t2End),
-          'is_test': true,
-        },
-        {
-          'id': 9903,
-          'activity_name': 'Test Activity 3',
-          'department': 'Test Dept',
-          'start_time': t3Start.toIso8601String(),
-          'end_time': t3End.toIso8601String(),
-          'day_of_week': todayName,
-          'time_range': formatTimeRange(t3Start, t3End),
           'is_test': true,
         }
       ];
@@ -79,7 +60,7 @@ class NodeRoleProvider with ChangeNotifier {
       final automation = SessionAutomationService();
       await automation.cancelAllSessions(); // Clear existing normal alarms
       await automation.scheduleNextSessionIfNeeded(
-          testTasks.cast<Map<String, dynamic>>(), _currentUserNode?.id.toString() ?? '', isRootNode);
+          testTasks.cast<Map<String, dynamic>>(), _currentUserNode?.id.toString() ?? '', true); // true = force upload power
           
     } else {
       await prefs.remove('test_mode_tasks');
@@ -93,6 +74,7 @@ class NodeRoleProvider with ChangeNotifier {
   bool get isRootNode => canUpload;
   
   bool get canUpload {
+    if (_isTestMode) return true;
     if (_currentUserNode == null) return false;
     // Check the user's own can_upload flag first (set from admin dashboard)
     if (_currentUserNode!.canUpload) return true;

@@ -327,4 +327,46 @@ class ApiService {
       return false;
     }
   }
+
+  Future<bool> uploadAttendanceBatch(String taskId, List<Map<String, dynamic>> records) async {
+    try {
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/attendance/batch'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'taskId': taskId,
+          'records': records,
+        }),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      print('ApiService: Batch Upload Error: $e');
+      return false;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> fetchSessionAttendance(String taskId) async {
+    try {
+      final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/attendance/session/$taskId'));
+      if (response.statusCode == 200) {
+        return (jsonDecode(response.body) as List<dynamic>).cast<Map<String, dynamic>>();
+      }
+      return [];
+    } catch (e) {
+      print('ApiService: Fetch Session Attendance Error: $e');
+      return [];
+    }
+  }
+
+  Future<List<dynamic>> fetchAllUsers() async {
+    try {
+      final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/users'));
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      }
+    } catch (e) {
+      print('API Error (fetchAllUsers): $e');
+    }
+    return [];
+  }
 }

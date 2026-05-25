@@ -1,5 +1,6 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter/foundation.dart';
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -7,6 +8,11 @@ class NotificationService {
   NotificationService._internal();
 
   final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
+  VoidCallback? _ongoingTapCallback;
+
+  void setOngoingTapCallback(VoidCallback callback) {
+    _ongoingTapCallback = callback;
+  }
 
   Future<void> init() async {
     print('NOTIFICATION_SERVICE: [INIT_START]');
@@ -18,12 +24,14 @@ class NotificationService {
     const initSettings = InitializationSettings(android: android);
     
     try {
-      final bool? initialized = await (_notifications as dynamic).initialize(
+      final bool? initialized = await _notifications.initialize(
         settings: initSettings,
         onDidReceiveNotificationResponse: (details) {
           print('NOTIFICATION_SERVICE: [TAP] ${details.payload}');
           if (details.payload == 'bt_off') {
              _turnOnBluetooth();
+          } else if (details.payload == 'ongoing') {
+             _ongoingTapCallback?.call();
           }
         },
       );
@@ -79,7 +87,7 @@ class NotificationService {
       fullScreenIntent: true,
     );
     try {
-      await (_notifications as dynamic).show(
+      await _notifications.show(
         id: 100,
         title: 'Bluetooth is OFF',
         body: 'Tap to turn on Bluetooth and mark attendance.',
@@ -103,7 +111,7 @@ class NotificationService {
       icon: '@mipmap/ic_launcher',
     );
     try {
-      await (_notifications as dynamic).show(
+      await _notifications.show(
         id: 101,
         title: 'Ongoing: $activityName',
         body: 'Peers Scanned: $userCount',
@@ -118,7 +126,7 @@ class NotificationService {
   Future<void> cancel(int id) async {
     print('NOTIFICATION_SERVICE: [CANCEL] $id');
     try {
-      await (_notifications as dynamic).cancel(id);
+      await _notifications.cancel(id: id);
     } catch (e) {}
   }
 
@@ -132,11 +140,34 @@ class NotificationService {
       icon: '@mipmap/ic_launcher',
     );
     try {
-      await (_notifications as dynamic).show(
+      await _notifications.show(
         id: 102,
         title: title,
         body: body,
         notificationDetails: const NotificationDetails(android: android),
+      );
+    } catch (e) {
+      print('NOTIFICATION_SERVICE: [SHOW_ERROR] $e');
+    }
+  }
+
+  Future<void> showMismatchAlert(String activityName, int count) async {
+    print('NOTIFICATION_SERVICE: [SHOW_MISMATCH] $activityName');
+    const android = AndroidNotificationDetails(
+      'mismatch_alert',
+      'Mismatch Alert',
+      importance: Importance.max,
+      priority: Priority.high,
+      icon: '@mipmap/ic_launcher',
+      category: AndroidNotificationCategory.error,
+    );
+    try {
+      await _notifications.show(
+        id: 103,
+        title: 'Attendance Mismatch: $activityName',
+        body: '$count records found locally are missing/stale in database!',
+        notificationDetails: const NotificationDetails(android: android),
+        payload: 'mismatch',
       );
     } catch (e) {
       print('NOTIFICATION_SERVICE: [SHOW_ERROR] $e');

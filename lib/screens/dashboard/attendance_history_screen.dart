@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../../services/api_service.dart';
 import '../../services/test_service.dart';
@@ -79,7 +80,22 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
         }
       ];
     } else {
-      summaryData = List<Map<String, dynamic>>.from(await _apiService.fetchAttendanceSummary(userId));
+      final rawSummary = await _apiService.fetchAttendanceSummary(userId);
+      summaryData = rawSummary.map((item) {
+        final sanitizedItem = Map<String, dynamic>.from(item);
+        sanitizedItem['all_dates'] = _safeStringList(item['all_dates']);
+        sanitizedItem['present_dates'] = _safeStringList(item['present_dates']);
+        
+        // Handle sessions as potentially serialized JSON
+        if (item['sessions'] is String) {
+          try {
+            sanitizedItem['sessions'] = jsonDecode(item['sessions']);
+          } catch (_) {
+            sanitizedItem['sessions'] = [];
+          }
+        }
+        return sanitizedItem;
+      }).toList();
       timetableData = List<Map<String, dynamic>>.from(await _apiService.fetchUserTimetable(userId));
     }
 
@@ -148,13 +164,46 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     return (present / total) * 100;
   }
 
+  String _extractDate(dynamic dateRaw) {
+    if (dateRaw == null) return '';
+    String str = dateRaw.toString();
+    if (str.length >= 10 && str.contains('-')) {
+      return str.substring(0, 10);
+    }
+    return str;
+  }
+
+  List<String> _safeStringList(dynamic data) {
+    if (data == null) return [];
+    
+    List<dynamic> listData = [];
+    if (data is List) {
+      listData = data;
+    } else if (data is String) {
+      try {
+        final decoded = jsonDecode(data);
+        if (decoded is List) {
+          listData = decoded;
+        } else {
+          listData = data.split(',');
+        }
+      } catch (_) {
+        listData = data.split(',');
+      }
+    }
+    
+    return listData.where((e) => e != null && e.toString().trim().isNotEmpty)
+                   .map((e) => _extractDate(e.toString().trim()))
+                   .toList();
+  }
+
   Map<String, dynamic> get _currentActivityData {
     if (_selectedActivityIndex == 0) {
       final Set<String> allDates = {};
       final Set<String> presentDates = {};
       for (final act in _summary) {
-        allDates.addAll(List<String>.from(act['all_dates'] ?? []));
-        presentDates.addAll(List<String>.from(act['present_dates'] ?? []));
+        allDates.addAll(_safeStringList(act['all_dates']));
+        presentDates.addAll(_safeStringList(act['present_dates']));
       }
       return {
         'activity_name': 'Overall Attendance',
@@ -233,8 +282,8 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
   }
 
   Widget _buildCalendarView(Map<String, dynamic> data) {
-    final allDates = List<String>.from(data['all_dates'] ?? []);
-    final presentDates = List<String>.from(data['present_dates'] ?? []);
+    final allDates = _safeStringList(data['all_dates']);
+    final presentDates = _safeStringList(data['present_dates']);
     final primaryColor = const Color(0xFF0078D4);
     final onSurface = Theme.of(context).colorScheme.onSurface;
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -419,12 +468,12 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
           orElse: () => {},
         );
 
-        final List<String> presentDates = List<String>.from(activitySummary['present_dates'] ?? []);
-        final List<String> allDates = List<String>.from(activitySummary['all_dates'] ?? []);
+        final List<String> presentDates = _safeStringList(activitySummary['present_dates']);
+        final List<String> allDates = _safeStringList(activitySummary['all_dates']);
 
         final List<dynamic> sessions = List<dynamic>.from(activitySummary['sessions'] ?? []);
         final session = sessions.firstWhere(
-          (s) => (s['session_date'] ?? s['date']) == dateStr && s['time_range'] == act['time_range'],
+          (s) => _extractDate(s['session_date'] ?? s['date']) == dateStr && s['time_range'] == act['time_range'],
           orElse: () => null,
         );
 

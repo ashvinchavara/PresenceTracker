@@ -6,6 +6,7 @@ import 'package:percent_indicator/circular_percent_indicator.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import '../../providers/node_role_provider.dart';
 import '../../providers/theme_provider.dart';
 import '../../services/api_service.dart';
@@ -15,9 +16,11 @@ import './attendance_history_screen.dart';
 import './full_timetable_screen.dart';
 import '../../services/ble_mesh_service.dart';
 import '../../services/session_automation_service.dart';
+import '../../services/foreground_task_handler.dart';
 import '../../core/api_config.dart';
 import '../../services/test_service.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../../services/notification_service.dart';
 
 
 class RootDashboard extends StatefulWidget {
@@ -67,12 +70,60 @@ class _RootDashboardState extends State<RootDashboard> {
     _fetchDashboardData();
     _startHealthPolling();
     _requestPermissions();
+    _initForegroundService();
+    _initNotifications();
+    FlutterForegroundTask.addTaskDataCallback(_onReceiveForegroundData);
     _uiSyncTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       _loadMeshState();
     });
     _testTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       _updateTestModeTimer();
     });
+  }
+
+  void _initNotifications() {
+    // Initialize the notification service in the main isolate so BT alerts work
+    final notifService = NotificationService();
+    notifService.init().then((_) {
+      // Register tap handler: tapping the ongoing notification opens the tracker
+      notifService.setOngoingTapCallback(() {
+        if (mounted) _showActiveMeshDetails();
+      });
+    });
+  }
+
+  void _initForegroundService() {
+    FlutterForegroundTask.init(
+      androidNotificationOptions: AndroidNotificationOptions(
+        channelId: 'ble_session_service',
+        channelName: 'BLE Attendance Session',
+        channelDescription: 'Running BLE scanning and advertising for attendance tracking.',
+        onlyAlertOnce: true,
+      ),
+      iosNotificationOptions: const IOSNotificationOptions(
+        showNotification: false,
+        playSound: false,
+      ),
+      foregroundTaskOptions: ForegroundTaskOptions(
+        eventAction: ForegroundTaskEventAction.repeat(10000),
+        autoRunOnBoot: true,
+        autoRunOnMyPackageReplaced: true,
+        allowWakeLock: true,
+        allowWifiLock: true,
+      ),
+    );
+  }
+
+  void _onReceiveForegroundData(Object data) {
+    print('Dashboard: Received data from foreground service: $data');
+    if (!mounted) return;
+    if (data == 'bt_alert') {
+      NotificationService().showBluetoothAlert();
+    } else if (data == 'bt_alert_clear') {
+      NotificationService().cancel(100);
+    } else {
+      _loadMeshState();
+    }
   }
 
   void _updateTestModeTimer() {
@@ -82,19 +133,40 @@ class _RootDashboardState extends State<RootDashboard> {
 
     if (_currentAlarm != null) {
       final now = DateTime.now();
-      if (_currentAlarm!['status'] == 'scheduled') {
+      String status = _currentAlarm!['status'] ?? 'scheduled';
+      
+      if (status == 'scheduled') {
          final start = DateTime.tryParse(_currentAlarm!['start_time']) ?? now;
          _testStage = 'waiting';
          _testCountdown = start.difference(now).inSeconds;
-      } else if (_currentAlarm!['status'] == 'active') {
+         
+         // If time is up but still scheduled, it's transitioning
+         if (_testCountdown <= 0) {
+           _testStage = 'transitioning';
+           _testCountdown = 0;
+         }
+      } else if (status == 'active') {
          final end = DateTime.tryParse(_currentAlarm!['end_time']) ?? now;
          _testStage = 'active';
          _testCountdown = end.difference(now).inSeconds;
+         
+         if (_testCountdown <= 0) {
+           _testStage = 'transitioning';
+           _testCountdown = 0;
+         }
+      } else {
+         _testStage = 'finished';
+         _testCountdown = 0;
       }
+      
       if (_testCountdown < 0) _testCountdown = 0;
       setState(() {});
     } else {
-      _testStage = 'finished';
+      if (_upcomingTasks.isNotEmpty && _testStage != 'finished') {
+        _testStage = 'waiting';
+      } else {
+        _testStage = 'finished';
+      }
       _testCountdown = 0;
       setState(() {});
     }
@@ -109,6 +181,10 @@ class _RootDashboardState extends State<RootDashboard> {
       Permission.bluetoothConnect,
       Permission.location,
     ].request();
+    
+    if (statuses[Permission.location]?.isGranted ?? false) {
+      await Permission.locationAlways.request();
+    }
     
     if (statuses[Permission.notification]?.isPermanentlyDenied ?? false) {
       print('Dashboard: Notification permission permanently denied. Opening settings.');
@@ -128,6 +204,7 @@ class _RootDashboardState extends State<RootDashboard> {
     _uiSyncTimer?.cancel();
     _testTimer?.cancel();
     _healthCheckTimer?.cancel();
+    FlutterForegroundTask.removeTaskDataCallback(_onReceiveForegroundData);
     super.dispose();
   }
 
@@ -168,9 +245,11 @@ class _RootDashboardState extends State<RootDashboard> {
     }
   }
 
-  void _startTestMode() {
+  void _startTestMode() async {
     final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
     userProvider.setTestMode(true);
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _loadMeshState();
     _fetchDashboardData();
   }
 
@@ -195,15 +274,25 @@ class _RootDashboardState extends State<RootDashboard> {
       
       // If waiting for this task to start, fast-forward to start
       if (now.isBefore(start)) {
-        final duration = end.difference(start);
         task['start_time'] = now.toIso8601String();
-        task['end_time'] = now.add(duration).toIso8601String();
+        // End time = now + 5 mins, meaning upload time is now + 3 mins
+        task['end_time'] = now.add(const Duration(minutes: 5)).toIso8601String();
         changed = true;
+        
+        await prefs.setBool('is_mesh_active', true);
+        await prefs.setString('mesh_task_id', task['id'].toString());
         break;
       } 
-      // If currently active, fast-forward to end
+      // If currently active, skip to the next phase
       else if (now.isAfter(start) && now.isBefore(end)) {
-        task['end_time'] = now.subtract(const Duration(seconds: 1)).toIso8601String();
+        final uploadTime = end.subtract(const Duration(minutes: 2));
+        if (now.isBefore(uploadTime)) {
+          // We are in scanning phase. Skip to upload phase (upload in 5 seconds).
+          task['end_time'] = now.add(const Duration(minutes: 2, seconds: 5)).toIso8601String();
+        } else {
+          // We are in upload phase. Skip to end (end in 5 seconds).
+          task['end_time'] = now.add(const Duration(seconds: 5)).toIso8601String();
+        }
         changed = true;
         break;
       }
@@ -213,9 +302,21 @@ class _RootDashboardState extends State<RootDashboard> {
       await prefs.setString('test_mode_tasks', jsonEncode(tasks));
       final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
       final automation = SessionAutomationService();
+      
+      // CRITICAL: Cancel existing alarms and clear the preference so reschedule works
+      await automation.cancelAllSessions();
+      
       await automation.scheduleNextSessionIfNeeded(
           tasks.cast<Map<String, dynamic>>(), userProvider.currentUserNode?.id.toString() ?? '', userProvider.isRootNode);
+          
+      // Refresh local state immediately
+      await _loadMeshState();
       _updateTestModeTimer();
+      
+      // "skip should ask for manual entry and list the users"
+      if (userProvider.canUpload || true) {
+         _showActiveMeshDetails();
+      }
     }
   }
 
@@ -650,7 +751,10 @@ class _RootDashboardState extends State<RootDashboard> {
   }
 
   void _showActiveMeshDetails() async {
-    if (_meshTaskId.isEmpty) return;
+    if (_meshTaskId.isEmpty || !_isMeshActive) {
+      print('Dashboard: Live Session Tracker blocked from opening because no session is currently active.');
+      return;
+    }
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -817,6 +921,7 @@ class _RootDashboardState extends State<RootDashboard> {
                 switch (_testStage) {
                   case 'waiting': title = 'Next Activity'; break;
                   case 'active': title = 'Activity Active'; break;
+                  case 'transitioning': title = 'Starting...'; break;
                   case 'finished': title = 'Test Finished'; break;
                   default: title = 'Processing...'; break;
                 }
@@ -975,9 +1080,9 @@ class _RootDashboardState extends State<RootDashboard> {
                     : ListView.builder(
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
-                        itemCount: Provider.of<NodeRoleProvider>(context).isTestMode ? _testActivities.length : _upcomingTasks.length,
+                        itemCount: _upcomingTasks.length,
                         itemBuilder: (context, index) {
-                          final task = Provider.of<NodeRoleProvider>(context).isTestMode ? _testActivities[index] : _upcomingTasks[index];
+                          final task = _upcomingTasks[index];
                           return _buildTaskItem(task);
                         },
                       ),
@@ -991,7 +1096,7 @@ class _RootDashboardState extends State<RootDashboard> {
   Widget _buildTaskItem(Map<String, dynamic> task) {
     final bool isTest = task['is_test'] == true;
     final bool isTargeted = _currentAlarm != null && _currentAlarm!['task_id'].toString() == task['id'].toString();
-    final bool isActive = (isTargeted && _currentAlarm!['status'] == 'active') || (isTest && _testStage == 'active' && task['id'] == 'test_2');
+    final bool isActive = isTargeted && _currentAlarm!['status'] == 'active';
     final Color statusColor = isActive ? Colors.green : (isTargeted ? const Color(0xFF0078D4) : (isTest ? Colors.orange : Colors.grey));
     final onSurface = Theme.of(context).colorScheme.onSurface;
 
@@ -1182,7 +1287,7 @@ class _RootDashboardState extends State<RootDashboard> {
 class _MeshDetailsSheet extends StatefulWidget {
   final String taskId;
   final ApiService apiService;
-  final Map<String, Map<String, int>> activeScannedUsers;
+  final Map<String, Map<String, dynamic>> activeScannedUsers;
 
   const _MeshDetailsSheet({
     required this.taskId,
@@ -1206,15 +1311,21 @@ class _MeshDetailsSheetState extends State<_MeshDetailsSheet> {
 
   Future<void> _loadMembers() async {
     try {
-      final data = await widget.apiService.fetchScheduleMembers(int.tryParse(widget.taskId) ?? 0);
-      if (data != null && data['members'] != null) {
-         if (mounted) {
-           setState(() {
-              _members = data['members'];
-              _isLoading = false;
-           });
-         }
+      final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
+      List<dynamic> loadedMembers = [];
+
+      if (userProvider.isTestMode) {
+        // Fetch ALL users in the database
+        loadedMembers = await widget.apiService.fetchAllUsers();
+      } else {
+        // Fetch only assigned members of the schedule
+        final data = await widget.apiService.fetchScheduleMembers(int.tryParse(widget.taskId) ?? 0);
+        if (data != null && data['members'] != null) {
+          loadedMembers = data['members'];
+        }
       }
+
+      _sortAndSetMembers(loadedMembers);
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -1222,39 +1333,61 @@ class _MeshDetailsSheetState extends State<_MeshDetailsSheet> {
     }
   }
 
-  void _confirmRemoval(dynamic member) {
+  void _sortAndSetMembers(List<dynamic> list) {
+    if (!mounted) return;
+    
+    // Sort so scanned/present ones are at the top
+    list.sort((a, b) {
+      final String uIdA = a['id'].toString();
+      final String uIdB = b['id'].toString();
+      
+      final bleService = BleMeshService();
+      final livePeers = bleService.getLivePeers();
+      
+      final bool scannedA = widget.activeScannedUsers.containsKey(uIdA) || livePeers.containsKey(uIdA);
+      final bool scannedB = widget.activeScannedUsers.containsKey(uIdB) || livePeers.containsKey(uIdB);
+      
+      if (scannedA != scannedB) {
+        return scannedA ? -1 : 1; // Scanned/present ones first
+      }
+      return (a['full_name'] ?? '').compareTo(b['full_name'] ?? '');
+    });
+
+    setState(() {
+      _members = list;
+      _isLoading = false;
+    });
+  }
+
+  void _togglePresence(dynamic member, bool currentlyPresent) {
+    final bleService = BleMeshService();
+    final String uId = member['id'].toString();
+    
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("Remove Attendance"),
-        content: Text("Are you sure you want to invalidate presence for ${member['full_name']}?"),
+        title: Text(currentlyPresent ? "Remove Attendance" : "Mark Present"),
+        content: Text(currentlyPresent 
+          ? "Are you sure you want to invalidate presence for ${member['full_name']}?"
+          : "Manually mark ${member['full_name']} as present?"),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            style: ElevatedButton.styleFrom(backgroundColor: currentlyPresent ? Colors.red : Colors.green),
             onPressed: () {
-               // Ensure state reflects manually removed (e.g., using API)
-               ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Attendance removed for ${member['full_name']}')));
+               bleService.toggleManualPresence(uId, !currentlyPresent);
                Navigator.pop(ctx);
+               // Re-sort and update list dynamically after toggle!
+               _sortAndSetMembers(_members);
+               ScaffoldMessenger.of(context).showSnackBar(
+                 SnackBar(content: Text('Attendance ${currentlyPresent ? "removed" : "added"} for ${member['full_name']}'))
+               );
             },
-            child: const Text("Remove"),
+            child: Text(currentlyPresent ? "Remove" : "Mark Present"),
           ),
         ],
       )
     );
-  }
-
-  void _promptAddAttendance(dynamic member) async {
-    TimeOfDay defaultStart = const TimeOfDay(hour: 9, minute: 0); 
-    
-    TimeOfDay? startT = await showTimePicker(context: context, initialTime: defaultStart, helpText: 'Select Start Time');
-    if (startT == null) return;
-    TimeOfDay? endT = await showTimePicker(context: context, initialTime: const TimeOfDay(hour: 10, minute: 0), helpText: 'Select End Time');
-    if (endT == null) return;
-    
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Attendance manually added for ${member['full_name']}')));
-    }
   }
 
   @override
@@ -1284,35 +1417,43 @@ class _MeshDetailsSheetState extends State<_MeshDetailsSheet> {
                 itemBuilder: (context, idx) {
                   final m = _members[idx];
                   final String uId = m['id'].toString();
-                  final bool isScanned = widget.activeScannedUsers.containsKey(uId);
+                  
+                  final bleService = BleMeshService();
+                  final livePeers = bleService.getLivePeers();
+                  
+                  final bool isScanned = widget.activeScannedUsers.containsKey(uId) || livePeers.containsKey(uId);
+                  final data = livePeers[uId] ?? widget.activeScannedUsers[uId];
+                  
+                  String timeInfo = "Not seen yet";
+                  if (isScanned && data != null) {
+                    final first = DateTime.fromMillisecondsSinceEpoch((data['first'] as int) * 1000);
+                    final last = DateTime.fromMillisecondsSinceEpoch((data['last'] as int) * 1000);
+                    timeInfo = "Seen: ${DateFormat('hh:mm:ss a').format(first)} - ${DateFormat('hh:mm:ss a').format(last)}";
+                  }
+
+                  final canEdit = Provider.of<NodeRoleProvider>(context, listen: false).canUpload;
 
                   return Card(
-                    color: isScanned ? Colors.green.withOpacity(0.1) : null,
+                    color: isScanned ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.05),
                     margin: const EdgeInsets.only(bottom: 8),
                     child: ListTile(
                       leading: CircleAvatar(
-                        backgroundColor: isScanned ? Colors.green : Colors.grey,
+                        backgroundColor: isScanned ? Colors.green : Colors.red.shade300,
                         child: Icon(isScanned ? Icons.bluetooth_connected : Icons.person_off, color: Colors.white),
                       ),
                       title: Text(m['full_name'] ?? 'Unknown', style: TextStyle(fontWeight: isScanned ? FontWeight.bold : FontWeight.normal)),
-                      subtitle: Text("Role: ${m['role_name']}"),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                           if (isScanned) const Text("Scanned", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
-                           const SizedBox(width: 10),
-                           IconButton(
-                             icon: const Icon(Icons.edit_calendar),
-                             onPressed: () {
-                               if (isScanned) {
-                                  _confirmRemoval(m);
-                               } else {
-                                  _promptAddAttendance(m);
-                               }
-                             },
-                           ),
+                          Text("Role: ${m['role_name']}"),
+                          Text(timeInfo, style: const TextStyle(fontSize: 10, color: Colors.grey)),
                         ],
                       ),
+                      trailing: canEdit ? IconButton(
+                        icon: Icon(isScanned ? Icons.remove_circle_outline : Icons.add_circle_outline, 
+                                   color: isScanned ? Colors.red : Colors.green),
+                        onPressed: () => _togglePresence(m, isScanned),
+                      ) : (isScanned ? const Icon(Icons.check_circle, color: Colors.green) : null),
                     ),
                   );
                 },

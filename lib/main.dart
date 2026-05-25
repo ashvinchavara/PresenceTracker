@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'providers/node_role_provider.dart';
 import 'providers/theme_provider.dart';
 import 'screens/auth/auth_screen.dart';
@@ -16,6 +17,9 @@ void main() async {
   await AndroidAlarmManager.initialize();
   await ApiConfig.init();
   await NotificationService().init();
+  
+  // Initialize foreground task communication port
+  FlutterForegroundTask.initCommunicationPort();
   
   // Initialize session
   final roleProvider = NodeRoleProvider();

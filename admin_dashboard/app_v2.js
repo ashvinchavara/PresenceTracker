@@ -1,6 +1,18 @@
 // app.js - Direct MySQL Connection Logic
 let API_BASE = 'https://presencetracker.onrender.com/api';
 
+// Auto-detect environment if running locally
+const hostname = window.location.hostname;
+
+if (window.location.protocol === 'file:') {
+    API_BASE = 'http://localhost:3000/api';
+    console.log(`🤖 Local file:// detected. Switched API_BASE to: ${API_BASE}`);
+} else if (hostname && !hostname.includes('onrender.com') && !hostname.includes('github.io')) {
+    // Covers localhost, 127.0.0.1, 192.168.x.x, 172.x.x.x, computer names (e.g. DESKTOP-X)
+    API_BASE = `http://${hostname}:3000/api`;
+    console.log(`🤖 Local network environment detected. Switched API_BASE to: ${API_BASE}`);
+}
+
 // Shared State
 let state = {
     departments: [], // Recursive Tree
@@ -125,6 +137,7 @@ async function loadAllData() {
         state.attendance = att;
         state.activities = acts || [];
         state.roles = roles || [];
+        state.dbMode = dbStatus ? dbStatus.mode : 'cloud';
 
         statusIndicator.classList.add('connected');
         
@@ -141,6 +154,7 @@ async function loadAllData() {
         connectionText.innerText = 'Offline / Error';
         statusIndicator.classList.remove('connected');
         statusIndicator.style.background = 'var(--danger)';
+        state.dbMode = 'unknown';
     }
 }
 
@@ -165,6 +179,16 @@ function populateDatalists() {
     if (actsDl) {
         actsDl.innerHTML = state.activities.map(a => `<option value="${a.name}">`).join('');
     }
+}
+
+function resolveImageUrl(url) {
+    if (!url) return null;
+    if (url.includes('drive.google.com/file/d/')) {
+        const match = url.match(/\/d\/([a-zA-Z0-9_-]+)/);
+        if (match && match[1]) return `https://drive.google.com/uc?export=view&id=${match[1]}`;
+    }
+    if (url.startsWith('http') || url.startsWith('file://')) return url;
+    return `${API_BASE.replace('/api', '')}${url}`;
 }
 
 // --- API Helpers ---
@@ -565,7 +589,7 @@ function renderUserAssignments() {
     gridBody.innerHTML = filteredUsers.map(u => {
         const initialsHtml = `<div class="student-initial">${u.full_name.charAt(0)}</div>`;
         const avatarHtml = u.image_url 
-            ? `<img src="${API_BASE.replace('/api', '')}${u.image_url}" 
+            ? `<img src="${resolveImageUrl(u.image_url)}" 
                  class="student-initial" style="object-fit: cover;"
                  onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                <div class="student-initial" style="display: none;">${u.full_name.charAt(0)}</div>`
@@ -640,6 +664,39 @@ window.editUserRow = (id) => {
     document.getElementById('edit-user-email').value = u.email;
     document.getElementById('edit-user-role').value = u.role || '';
     
+    // Clear/initialize image edit states
+    document.getElementById('edit-user-image-url').value = '';
+    const imgPreview = document.getElementById('edit-user-img-preview');
+    const imgFallback = document.getElementById('edit-user-img-fallback');
+    const removeBtn = document.getElementById('btn-remove-user-image');
+    
+    // Reset remove image tracker flag
+    state.removeUserImageFlag = false;
+
+    if (u.image_url) {
+        const resolvedUrl = resolveImageUrl(u.image_url);
+        
+        imgPreview.src = resolvedUrl;
+        imgPreview.style.display = 'block';
+        imgFallback.style.display = 'none';
+        removeBtn.style.display = 'block';
+    } else {
+        imgPreview.style.display = 'none';
+        imgFallback.style.display = 'flex';
+        imgFallback.innerText = u.full_name ? u.full_name.charAt(0).toUpperCase() : '?';
+        removeBtn.style.display = 'none';
+    }
+
+    // Set up Remove Image button click handler
+    removeBtn.onclick = () => {
+        state.removeUserImageFlag = true;
+        imgPreview.style.display = 'none';
+        imgFallback.style.display = 'flex';
+        imgFallback.innerText = u.full_name ? u.full_name.charAt(0).toUpperCase() : '?';
+        removeBtn.style.display = 'none';
+        document.getElementById('edit-user-image-url').value = '';
+    };
+
     const deptSelect = document.getElementById('edit-user-dept');
     deptSelect.innerHTML = '<option value="">Unassigned</option>' + 
         state.departments.map(d => `<option value="${d.id}" ${d.id == u.dept_id ? 'selected' : ''}>${d.name}</option>`).join('');
@@ -653,6 +710,8 @@ window.saveUserEditModal = async () => {
     const email = document.getElementById('edit-user-email').value;
     const dept_id = document.getElementById('edit-user-dept').value || null;
     const role = document.getElementById('edit-user-role').value;
+    const newImageUrl = document.getElementById('edit-user-image-url').value.trim();
+    const removeImage = state.removeUserImageFlag && !newImageUrl;
 
     const u = state.users.find(user => user.id == id);
 
@@ -664,7 +723,9 @@ window.saveUserEditModal = async () => {
             full_name,
             email,
             dept_id,
-            role
+            role,
+            image_url: newImageUrl || null,
+            remove_image: removeImage
         })
     });
 
@@ -953,7 +1014,7 @@ function renderPersonnelPicker() {
         const isSelected = selectedPickerUsers.includes(u.id);
         const initialsHtml = `<div class="student-initial" style="width: 32px; height: 32px; font-size: 11px; flex-shrink: 0;">${u.full_name.charAt(0)}</div>`;
         const avatarHtml = u.image_url 
-            ? `<img src="${API_BASE.replace('/api', '')}${u.image_url}" 
+            ? `<img src="${resolveImageUrl(u.image_url)}" 
                  style="width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 1px solid rgba(255,255,255,0.1); flex-shrink: 0;"
                  onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                <div class="student-initial" style="width: 32px; height: 32px; font-size: 11px; display: none; flex-shrink: 0;">${u.full_name.charAt(0)}</div>`
@@ -1094,14 +1155,15 @@ async function renderAttendanceLogs() {
         let html = '';
         users.forEach(u => {
             const userLogs = state.attendance.filter(log => log.user_id === u.id && log.activity_name === activity.name);
-            const totalSessions = 10; // Mock
+            const enrolledSessions = getEnrolledActivitySessionsForUser(u.id, activity.name);
+            const totalSessions = enrolledSessions.length;
             const present = userLogs.length;
-            const percentage = ((present / totalSessions) * 100);
+            const percentage = totalSessions > 0 ? ((present / totalSessions) * 100) : 0;
             const pctStr = percentage.toFixed(1);
 
             const initialsHtml = `<div class="student-initial">${u.full_name.charAt(0)}</div>`;
             const avatarHtml = u.image_url 
-                ? `<img src="${API_BASE.replace('/api', '')}${u.image_url}" 
+                ? `<img src="${resolveImageUrl(u.image_url)}" 
                      class="student-initial" style="object-fit: cover;"
                      onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                    <div class="student-initial" style="display: none;">${u.full_name.charAt(0)}</div>`
@@ -1175,9 +1237,10 @@ async function generateAttendanceReport() {
     
     const tableData = users.map((u, index) => {
         const userLogs = state.attendance.filter(log => log.user_id === u.id && log.activity_name === activity.name);
-        const totalSessions = 10; // Mock
+        const enrolledSessions = getEnrolledActivitySessionsForUser(u.id, activity.name);
+        const totalSessions = enrolledSessions.length;
         const present = userLogs.length;
-        const percentage = ((present / totalSessions) * 100).toFixed(1);
+        const percentage = totalSessions > 0 ? ((present / totalSessions) * 100).toFixed(1) : "0.0";
         return [index + 1, u.full_name, u.role || 'Personnel', `${present}/${totalSessions}`, `${percentage}%`];
     });
     
@@ -1215,7 +1278,7 @@ window.openUserAnalytics = (userId, initialActivityId) => {
     const initialBox = document.getElementById('user-analytics-initial');
     if (user.image_url) {
         initialBox.innerHTML = `
-            <img src="${API_BASE.replace('/api', '')}${user.image_url}" 
+            <img src="${resolveImageUrl(user.image_url)}" 
                  style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;"
                  onerror="this.style.display='none'; this.parentElement.innerText='${user.full_name.charAt(0)}'; this.parentElement.style.background='rgba(255, 255, 255, 0.1)';">
         `;
@@ -1288,12 +1351,57 @@ function getEnrolledActivityDates(activityName) {
         return a.startTimeRaw.localeCompare(b.startTimeRaw);
     });
 }
+
+function getEnrolledActivitySessionsForUser(userId, activityName) {
+    // 1. Find all timetable slots for this activity that the user is assigned to
+    const userTimetableSlots = state.timetable.filter(t => 
+        t.activity_name === activityName && 
+        t.user_ids && 
+        t.user_ids.split(',').map(id => id.trim()).includes(String(userId))
+    );
+    const userSlotIds = new Set(userTimetableSlots.map(t => t.id));
+
+    // 2. Filter all attendance logs for this activity to find unique sessions (date + timetable_id)
+    //    that occurred for the user's assigned slots, or sessions where the user was present.
+    const sessions = [];
+    const seen = new Set();
+
+    const allActivityLogs = state.attendance.filter(log => log.activity_name === activityName);
+    allActivityLogs.forEach(log => {
+        const isAssigned = userSlotIds.has(log.timetable_id);
+        const isUserPresent = log.user_id === userId;
+        
+        if (isAssigned || isUserPresent) {
+            const d = parseDBDate(log.date || log.created_at);
+            const dateStr = d.toDateString();
+            const timeRange = `${parse24h(log.start_time).time} ${parse24h(log.start_time).ampm} - ${parse24h(log.end_time).time} ${parse24h(log.end_time).ampm}`;
+            const key = `${dateStr}_${log.timetable_id}`;
+            
+            if (!seen.has(key)) {
+                seen.add(key);
+                sessions.push({
+                    date: d,
+                    dateStr: dateStr,
+                    timeRange: timeRange,
+                    startTimeRaw: log.start_time
+                });
+            }
+        }
+    });
+
+    // Sort Ascending by Date then Time
+    return sessions.sort((a, b) => {
+        if (a.date.getTime() !== b.date.getTime()) return a.date.getTime() - b.date.getTime();
+        return a.startTimeRaw.localeCompare(b.startTimeRaw);
+    });
+}
+
 function renderUserAnalyticsLogs(userId, activityId) {
     const logsContainer = document.getElementById('user-analytics-logs');
     const activity = state.activities.find(a => a.id == activityId);
     if (!activity) return;
 
-    const activitySessions = getEnrolledActivityDates(activity.name);
+    const activitySessions = getEnrolledActivitySessionsForUser(userId, activity.name);
     const userLogs = state.attendance.filter(log => log.user_id === userId && log.activity_name === activity.name);
     
     if (activitySessions.length === 0) {
@@ -1351,7 +1459,7 @@ async function generateIndividualReport(userId, _) {
     let totalOverallSessions = 0;
     let totalOverallPresent = 0;
     userActivities.forEach(activity => {
-        const activityDates = getEnrolledActivityDates(activity.name);
+        const activityDates = getEnrolledActivitySessionsForUser(userId, activity.name);
         const userLogs = state.attendance.filter(log => log.user_id === userId && log.activity_name === activity.name);
         totalOverallSessions += activityDates.length;
         totalOverallPresent += userLogs.length;
@@ -1382,7 +1490,7 @@ async function generateIndividualReport(userId, _) {
     currentY += 15;
 
     for (const activity of userActivities) {
-        const sessions = getEnrolledActivityDates(activity.name);
+        const sessions = getEnrolledActivitySessionsForUser(userId, activity.name);
         const userLogs = state.attendance.filter(log => log.user_id === userId && log.activity_name === activity.name);
 
         if (sessions.length === 0) continue;
@@ -1505,7 +1613,7 @@ function renderUploadPermissions() {
     // Users
     const authUsers = state.users.filter(u => u.can_upload);
     usersContainer.innerHTML = authUsers.length ? authUsers.map(u => {
-        const avatarSrc = u.image_url ? `${API_BASE.replace('/api', '')}${u.image_url}` : null;
+        const avatarSrc = resolveImageUrl(u.image_url);
         return `
             <div class="chip" style="padding-left: 5px;">
                 ${avatarSrc ? `<img src="${avatarSrc}" style="width: 20px; height: 20px; border-radius: 50%; margin-right: 8px; object-fit: cover;">` : ''}
@@ -1604,6 +1712,25 @@ function setupEventListeners() {
         themeContainer.onclick = () => toggleTheme();
     }
 
+    // Database Switch Click
+    const dbStatusContainer = document.querySelector('.db-status-container');
+    if (dbStatusContainer) {
+        dbStatusContainer.onclick = () => {
+            document.getElementById('db-switch-modal').style.display = 'flex';
+            updateDbSwitchModalUI();
+        };
+    }
+
+    const choiceCloudBtn = document.getElementById('choice-cloud');
+    if (choiceCloudBtn) {
+        choiceCloudBtn.onclick = () => switchDatabaseMode('cloud');
+    }
+    
+    const choiceLocalBtn = document.getElementById('choice-local');
+    if (choiceLocalBtn) {
+        choiceLocalBtn.onclick = () => switchDatabaseMode('local');
+    }
+
     // Tab switching
     document.querySelectorAll('.nav-links li').forEach(li => {
         li.onclick = () => {
@@ -1648,9 +1775,18 @@ function setupEventListeners() {
 
         const lines = data.split('\n');
         for (const line of lines) {
-            const [name, email] = line.split(',').map(s => s.trim());
+            const parts = line.split(',').map(s => s.trim());
+            const name = parts[0];
+            const email = parts[1];
+            const imageUrl = parts[2] || null;
             if (name && email) {
-                await apiPost('/users', { full_name: name, email, role, dept_id: deptId });
+                await apiPost('/users', { 
+                    full_name: name, 
+                    email, 
+                    role, 
+                    dept_id: deptId,
+                    image_url: imageUrl
+                });
             }
         }
         loadAllData();
@@ -1815,5 +1951,54 @@ function setupEventListeners() {
     const btnMakeReport = document.getElementById('btn-make-report');
     if (btnMakeReport) {
         btnMakeReport.onclick = () => generateAttendanceReport();
+    }
+}
+
+function updateDbSwitchModalUI() {
+    const isCloud = state.dbMode === 'cloud';
+    document.getElementById('choice-cloud').style.borderColor = isCloud ? 'var(--success)' : 'var(--glass-border)';
+    document.getElementById('choice-cloud').querySelector('.choice-indicator').style.display = isCloud ? 'block' : 'none';
+    
+    document.getElementById('choice-local').style.borderColor = !isCloud ? 'var(--warning)' : 'var(--glass-border)';
+    document.getElementById('choice-local').querySelector('.choice-indicator').style.display = !isCloud ? 'block' : 'none';
+    
+    document.getElementById('db-switch-error').style.display = 'none';
+}
+
+async function switchDatabaseMode(mode) {
+    const errorDiv = document.getElementById('db-switch-error');
+    errorDiv.style.display = 'none';
+    
+    const btnCloud = document.getElementById('choice-cloud');
+    const btnLocal = document.getElementById('choice-local');
+    btnCloud.style.pointerEvents = 'none';
+    btnLocal.style.pointerEvents = 'none';
+    btnCloud.style.opacity = '0.5';
+    btnLocal.style.opacity = '0.5';
+    
+    try {
+        const response = await fetch(`${API_BASE}/db-status/toggle`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: mode })
+        });
+        const resData = await response.json();
+        
+        if (response.ok && resData.success) {
+            state.dbMode = resData.mode;
+            document.getElementById('db-switch-modal').style.display = 'none';
+            await loadAllData();
+        } else {
+            errorDiv.innerText = resData.error || 'Failed to switch database.';
+            errorDiv.style.display = 'block';
+        }
+    } catch (e) {
+        errorDiv.innerText = `Network/Server error: ${e.message}`;
+        errorDiv.style.display = 'block';
+    } finally {
+        btnCloud.style.pointerEvents = 'auto';
+        btnLocal.style.pointerEvents = 'auto';
+        btnCloud.style.opacity = '1';
+        btnLocal.style.opacity = '1';
     }
 }

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
@@ -83,39 +84,65 @@ class ReportService {
     );
   }
 
-  static String _formatTime12h(dynamic timeStr) {
-    if (timeStr == null || timeStr.toString().isEmpty || timeStr == '--:--') return '--:--';
-    try {
-      final parts = timeStr.toString().split(':');
-      if (parts.length < 2) return timeStr.toString();
-      int hour = int.parse(parts[0]);
-      int minute = int.parse(parts[1]);
-      final ampm = hour >= 12 ? 'PM' : 'AM';
-      hour = hour % 12;
-      if (hour == 0) hour = 12;
-      return "${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')} $ampm";
-    } catch (e) {
-      return timeStr.toString();
+  static List<dynamic> _parseList(dynamic data) {
+    if (data == null) return [];
+    if (data is List) return data;
+    if (data is String) {
+      try {
+        final decoded = jsonDecode(data);
+        if (decoded is List) return decoded;
+      } catch (_) {}
+      return data.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
     }
+    return [];
+  }
+
+  static String _extractDate(dynamic dateRaw) {
+    if (dateRaw == null) return '';
+    String str = dateRaw.toString();
+    if (str.length >= 10 && str.contains('-')) {
+      return str.substring(0, 10);
+    }
+    return str;
+  }
+
+  static String _formatTime12h(dynamic timeRaw) {
+    if (timeRaw == null) return '--:--';
+    String timeStr = timeRaw.toString();
+    try {
+      final parts = timeStr.split(':');
+      if (parts.length >= 2) {
+        int hour = int.parse(parts[0]);
+        int minute = int.parse(parts[1]);
+        String period = hour >= 12 ? 'PM' : 'AM';
+        hour = hour % 12;
+        if (hour == 0) hour = 12;
+        return "${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')} $period";
+      }
+    } catch (_) {}
+    return '--:--';
   }
 
   static pw.Widget _buildActivitySection(Map<String, dynamic> activity) {
     final activityName = activity['activity_name'] ?? 'Unknown Activity';
-    final dynamic sessionsData = activity['sessions'];
+    final dynamic sessionsData = _parseList(activity['sessions']);
     
     List<Map<String, dynamic>> sessions = [];
-    if (sessionsData != null && sessionsData is List) {
+    if (sessionsData is List) {
       sessions = sessionsData.map((s) => Map<String, dynamic>.from(s)).toList();
     }
-
+ 
     if (sessions.isEmpty) {
-      final List<dynamic> allDates = activity['all_dates'] ?? [];
-      final List<dynamic> presentDates = activity['present_dates'] ?? [];
+      final List<dynamic> allDates = _parseList(activity['all_dates']);
+      final List<dynamic> presentDates = _parseList(activity['present_dates']).map((d) => _extractDate(d)).toList();
       if (allDates.isNotEmpty) {
-        sessions = allDates.map((d) => {
-          'date': d.toString(),
-          'is_present': presentDates.contains(d),
-          'time_range': ''
+        sessions = allDates.map((d) {
+          final dateStr = _extractDate(d);
+          return {
+            'date': dateStr,
+            'is_present': presentDates.contains(dateStr),
+            'time_range': ''
+          };
         }).toList();
       }
     }
@@ -169,7 +196,7 @@ class ReportService {
             spacing: 4,
             runSpacing: 4,
             children: sessions.map((session) {
-              final dateStr = session['date'] ?? '';
+              final dateStr = (session['session_date'] ?? session['date'] ?? '').toString();
               if (dateStr.isEmpty) return pw.SizedBox();
 
               DateTime date;
@@ -179,12 +206,12 @@ class ReportService {
                  return pw.SizedBox();
               }
 
-              final isPresent = session['is_present'] == true || session['is_present'] == 1;
+              final isPresent = session['is_present'] == true || session['is_present'] == 1 || session['is_present'] == 'true';
               final timeRange = session['time_range'] ?? '';
               
               // Entry/Exit Formatting
-              final entryTime = _formatTime12h(session['entry_time']);
-              final exitTime = _formatTime12h(session['exit_time']);
+              final entryTime = ReportService._formatTime12h(session['entry_time']);
+              final exitTime = ReportService._formatTime12h(session['exit_time']);
               final displayTime = (isPresent && entryTime != '--:--') 
                   ? "$entryTime - $exitTime" 
                   : timeRange.toString();
