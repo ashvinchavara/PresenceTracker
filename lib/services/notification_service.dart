@@ -44,6 +44,10 @@ class NotificationService {
     }
   }
 
+  Future<void> requestPermissions() async {
+    await _notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
+  }
+
   Future<void> _createChannels() async {
     const btChannel = AndroidNotificationChannel(
       'bt_alert',
