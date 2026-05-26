@@ -220,7 +220,7 @@ class _RootDashboardState extends State<RootDashboard> {
   void _startBluetoothMonitoring() {
     // Check BT state immediately on app open
     FlutterBluePlus.adapterState.first.then((state) {
-      if (state != BluetoothAdapterState.on) {
+      if (state != BluetoothAdapterState.on && _isMeshActive) {
         NotificationService().showBluetoothAlert();
       }
     });
@@ -228,6 +228,7 @@ class _RootDashboardState extends State<RootDashboard> {
     // Periodically show Bluetooth alert every 10 seconds if BT is off
     _btMonitoringTimer?.cancel();
     _btMonitoringTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
+      if (!_isMeshActive) return;
       final state = await FlutterBluePlus.adapterState.first;
       if (state != BluetoothAdapterState.on) {
         print('Dashboard: Periodic - Bluetooth is OFF, showing alert');
@@ -238,6 +239,7 @@ class _RootDashboardState extends State<RootDashboard> {
     // Continuously listen for BT state changes
     _btStateSubscription = FlutterBluePlus.adapterState.listen((state) {
       if (state != BluetoothAdapterState.on) {
+        if (!_isMeshActive) return;
         print('Dashboard: Bluetooth is OFF, showing alert');
         NotificationService().showBluetoothAlert();
       } else {
@@ -277,6 +279,10 @@ class _RootDashboardState extends State<RootDashboard> {
         _rootAggregatedData = aggData;
         _currentAlarm = alarm;
       });
+      
+      if (!active) {
+        NotificationService().cancel(100);
+      }
       
       if (alarm != null && (alarm['notified'] ?? false) == false) {
         _showAlarmPopup(alarm);
