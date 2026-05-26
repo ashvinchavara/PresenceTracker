@@ -59,6 +59,9 @@ void onSessionStart() async {
     serviceId: 300,
     notificationTitle: 'Starting: $activityName',
     notificationText: 'Initializing BLE mesh network...',
+    notificationIcon: const NotificationIcon(
+      metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON',
+    ),
     callback: startForegroundCallback,
   );
 

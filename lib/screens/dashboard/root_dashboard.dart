@@ -21,6 +21,7 @@ import '../../core/api_config.dart';
 import '../../services/test_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../../services/notification_service.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 
 class RootDashboard extends StatefulWidget {
@@ -45,6 +46,7 @@ class _RootDashboardState extends State<RootDashboard> {
   Map<String, Map<String, int>> _rootAggregatedData = {};
   Map<String, dynamic>? _currentAlarm;
   Timer? _uiSyncTimer;
+  StreamSubscription<BluetoothAdapterState>? _btStateSubscription;
 
   // --- CONNECTIVITY STATE ---
   bool _isConnected = true;
@@ -72,6 +74,7 @@ class _RootDashboardState extends State<RootDashboard> {
     _requestPermissions();
     _initForegroundService();
     _initNotifications();
+    _startBluetoothMonitoring();
     FlutterForegroundTask.addTaskDataCallback(_onReceiveForegroundData);
     _uiSyncTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       _loadMeshState();
@@ -204,8 +207,29 @@ class _RootDashboardState extends State<RootDashboard> {
     _uiSyncTimer?.cancel();
     _testTimer?.cancel();
     _healthCheckTimer?.cancel();
+    _btStateSubscription?.cancel();
     FlutterForegroundTask.removeTaskDataCallback(_onReceiveForegroundData);
     super.dispose();
+  }
+
+  void _startBluetoothMonitoring() {
+    // Check BT state immediately on app open
+    FlutterBluePlus.adapterState.first.then((state) {
+      if (state != BluetoothAdapterState.on) {
+        NotificationService().showBluetoothAlert();
+      }
+    });
+
+    // Continuously listen for BT state changes
+    _btStateSubscription = FlutterBluePlus.adapterState.listen((state) {
+      if (state != BluetoothAdapterState.on) {
+        print('Dashboard: Bluetooth is OFF, showing alert');
+        NotificationService().showBluetoothAlert();
+      } else {
+        print('Dashboard: Bluetooth is ON, clearing alert');
+        NotificationService().cancel(100);
+      }
+    });
   }
 
   Future<void> _loadMeshState() async {

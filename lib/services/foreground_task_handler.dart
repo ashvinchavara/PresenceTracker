@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 import 'ble_mesh_service.dart';
 import 'api_service.dart';
+import 'session_automation_service.dart';
 
 /// Top-level callback that the foreground service calls to set the handler.
 /// Must be a top-level or static function.
@@ -88,6 +90,7 @@ class BleSessionTaskHandler extends TaskHandler {
     FlutterForegroundTask.updateService(
       notificationTitle: 'Tracking: $activityName',
       notificationText: 'BLE mesh active • Session ends at ${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}',
+      notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
     );
   }
 
@@ -97,6 +100,7 @@ class BleSessionTaskHandler extends TaskHandler {
     final peers = _bleService.getLivePeers();
     FlutterForegroundTask.updateService(
       notificationText: 'Peers scanned: ${peers.length} • Running...',
+      notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
     );
 
     // Also persist peer data to SharedPreferences for UI sync
@@ -125,6 +129,7 @@ class BleSessionTaskHandler extends TaskHandler {
       await _bleService.uploadAttendance();
       FlutterForegroundTask.updateService(
         notificationText: 'Uploading attendance data...',
+        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
       );
     } catch (e) {
       print('FG_SERVICE: Upload error: $e');
@@ -137,6 +142,7 @@ class BleSessionTaskHandler extends TaskHandler {
       await _bleService.verifyAttendance();
       FlutterForegroundTask.updateService(
         notificationText: 'Verifying attendance...',
+        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
       );
     } catch (e) {
       print('FG_SERVICE: Verify error: $e');
@@ -276,10 +282,36 @@ class SessionScheduler {
       };
       await prefs.setString('session_alarm', jsonEncode(alarmData));
       print('FG_SERVICE: Next session alarm saved: ${nextTask['activity_name']} at $nextStartTime');
-      
-      // Note: The actual AndroidAlarmManager scheduling will happen
-      // when the main app opens or via the boot receiver.
-      // We save the data so the alarm can be re-registered.
+
+      // Actually schedule the alarms via AndroidAlarmManager
+      try {
+        await AndroidAlarmManager.initialize();
+        
+        print('FG_SERVICE: Scheduling start alarm at $nextStartTime');
+        await AndroidAlarmManager.oneShotAt(
+          nextStartTime,
+          1001, // _startAlarmId
+          onSessionStart,
+          exact: true,
+          wakeup: true,
+          rescheduleOnReboot: true,
+        );
+
+        if (nextEndTime != null) {
+          print('FG_SERVICE: Scheduling end alarm at $nextEndTime');
+          await AndroidAlarmManager.oneShotAt(
+            nextEndTime,
+            1002, // _endAlarmId
+            onSessionEnd,
+            exact: true,
+            wakeup: true,
+            rescheduleOnReboot: true,
+          );
+        }
+        print('FG_SERVICE: Next session alarms registered successfully.');
+      } catch (e) {
+        print('FG_SERVICE: Failed to schedule alarms from foreground: $e');
+      }
     }
   }
 

@@ -20,7 +20,7 @@ class NotificationService {
     // Request permission explicitly for Android 13+
     await _notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
 
-    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const android = AndroidInitializationSettings('@drawable/ic_notification');
     const initSettings = InitializationSettings(android: android);
     
     try {
@@ -81,7 +81,8 @@ class NotificationService {
       importance: Importance.max,
       priority: Priority.high,
       ticker: 'Bluetooth is OFF',
-      icon: '@mipmap/ic_launcher',
+      icon: '@drawable/ic_notification',
+      largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher_round'),
       category: AndroidNotificationCategory.alarm,
       audioAttributesUsage: AudioAttributesUsage.alarm,
       fullScreenIntent: true,
@@ -108,7 +109,8 @@ class NotificationService {
       priority: Priority.low,
       showWhen: true,
       ongoing: true,
-      icon: '@mipmap/ic_launcher',
+      icon: '@drawable/ic_notification',
+      largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher_round'),
     );
     try {
       await _notifications.show(
@@ -137,7 +139,8 @@ class NotificationService {
       'Alerts',
       importance: Importance.max,
       priority: Priority.max,
-      icon: '@mipmap/ic_launcher',
+      icon: '@drawable/ic_notification',
+      largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher_round'),
     );
     try {
       await _notifications.show(
@@ -158,7 +161,8 @@ class NotificationService {
       'Mismatch Alert',
       importance: Importance.max,
       priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
+      icon: '@drawable/ic_notification',
+      largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher_round'),
       category: AndroidNotificationCategory.error,
     );
     try {

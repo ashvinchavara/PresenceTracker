@@ -78,6 +78,11 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- Notification Icon for flutter_foreground_task -->
+        <meta-data
+            android:name="com.pravera.flutter_foreground_task.NOTIFICATION_ICON"
+            android:resource="@drawable/ic_notification" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
