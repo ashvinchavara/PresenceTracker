@@ -82,11 +82,9 @@ class BleMeshService {
     _btWatchdog = Timer.periodic(const Duration(seconds: 10), (timer) async {
       final state = await FlutterBluePlus.adapterState.first;
       if (state != BluetoothAdapterState.on) {
-        if (!_isBtAlertShown) {
-          print('BleMeshService: Watchdog - Bluetooth is OFF. Sending signal to main.');
-          _isBtAlertShown = true;
-          FlutterForegroundTask.sendDataToMain('bt_alert');
-        }
+        print('BleMeshService: Watchdog - Bluetooth is OFF. Sending signal to main.');
+        _isBtAlertShown = true;
+        FlutterForegroundTask.sendDataToMain('bt_alert');
       } else {
         if (_isBtAlertShown) {
           print('BleMeshService: Watchdog - Bluetooth is ON. Sending signal to main.');
@@ -130,10 +128,8 @@ class BleMeshService {
           }
         } else if (state == BluetoothAdapterState.off) {
           print('BleMeshService: Bluetooth OFF. Stopping Scan...');
-          if (!_isBtAlertShown) {
-            _isBtAlertShown = true;
-            FlutterForegroundTask.sendDataToMain('bt_alert');
-          }
+          _isBtAlertShown = true;
+          FlutterForegroundTask.sendDataToMain('bt_alert');
           try {
             await FlutterBluePlus.stopScan();
           } catch (e) {}

@@ -47,6 +47,7 @@ class _RootDashboardState extends State<RootDashboard> {
   Map<String, dynamic>? _currentAlarm;
   Timer? _uiSyncTimer;
   StreamSubscription<BluetoothAdapterState>? _btStateSubscription;
+  Timer? _btMonitoringTimer;
 
   // --- CONNECTIVITY STATE ---
   bool _isConnected = true;
@@ -211,6 +212,7 @@ class _RootDashboardState extends State<RootDashboard> {
     _testTimer?.cancel();
     _healthCheckTimer?.cancel();
     _btStateSubscription?.cancel();
+    _btMonitoringTimer?.cancel();
     FlutterForegroundTask.removeTaskDataCallback(_onReceiveForegroundData);
     super.dispose();
   }
@@ -219,6 +221,16 @@ class _RootDashboardState extends State<RootDashboard> {
     // Check BT state immediately on app open
     FlutterBluePlus.adapterState.first.then((state) {
       if (state != BluetoothAdapterState.on) {
+        NotificationService().showBluetoothAlert();
+      }
+    });
+
+    // Periodically show Bluetooth alert every 10 seconds if BT is off
+    _btMonitoringTimer?.cancel();
+    _btMonitoringTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
+      final state = await FlutterBluePlus.adapterState.first;
+      if (state != BluetoothAdapterState.on) {
+        print('Dashboard: Periodic - Bluetooth is OFF, showing alert');
         NotificationService().showBluetoothAlert();
       }
     });
