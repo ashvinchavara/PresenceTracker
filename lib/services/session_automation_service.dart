@@ -51,6 +51,7 @@ void onSessionStart() async {
       autoRunOnMyPackageReplaced: true,
       allowWakeLock: true,
       allowWifiLock: true,
+      stopWithTask: false,
     ),
   );
 

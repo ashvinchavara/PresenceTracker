@@ -114,6 +114,7 @@ class _RootDashboardState extends State<RootDashboard> {
         autoRunOnMyPackageReplaced: true,
         allowWakeLock: true,
         allowWifiLock: true,
+        stopWithTask: false,
       ),
     );
   }
