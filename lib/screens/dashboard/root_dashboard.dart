@@ -184,6 +184,9 @@ class _RootDashboardState extends State<RootDashboard> {
       Permission.bluetoothConnect,
       Permission.location,
     ].request();
+
+    // Trigger explicit notification permission request via the service
+    await NotificationService().requestPermissions();
     
     if (statuses[Permission.location]?.isGranted ?? false) {
       await Permission.locationAlways.request();
