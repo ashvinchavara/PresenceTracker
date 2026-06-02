@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'foreground_task_handler.dart';
 
 import 'package:flutter/widgets.dart';
+import 'dart:developer' as developer;
 
 // --- Background Task Entry Points (Top-level) ---
 
@@ -14,6 +15,7 @@ import 'package:flutter/widgets.dart';
 @pragma('vm:entry-point')
 void onSessionStart() async {
   WidgetsFlutterBinding.ensureInitialized();
+  developer.log('ALARM TRIGGERED: onSessionStart called at ${DateTime.now()}', name: 'AutomationAlarm');
   print('BACKGROUND LOG: onSessionStart alarm triggered at ${DateTime.now()}');
 
   final prefs = await SharedPreferences.getInstance();
@@ -187,6 +189,7 @@ class SessionAutomationService {
 
       if (nextStartTime.isAfter(now)) {
         // Schedule START alarm
+        developer.log('ALARM SCHEDULED: Start alarm set for $nextStartTime (Task: ${nextTask['activity_name']})', name: 'AutomationAlarm');
         print('Automation: Scheduling start alarm at $nextStartTime');
         await AndroidAlarmManager.oneShotAt(
           nextStartTime,
