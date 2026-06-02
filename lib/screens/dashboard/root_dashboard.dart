@@ -299,9 +299,22 @@ class _RootDashboardState extends State<RootDashboard> {
     _fetchDashboardData();
   }
 
-  void _endTestMode() {
+  void _endTestMode() async {
     final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
     userProvider.setTestMode(false);
+    
+    // Stop automation and foreground service
+    final automation = SessionAutomationService();
+    await automation.cancelAllSessions();
+    
+    // Force reset mesh active state
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('is_mesh_active', false);
+    
+    // Clear any lingering bluetooth alert notifications
+    NotificationService().cancel(100);
+    
+    await _loadMeshState();
     _fetchDashboardData();
   }
 
