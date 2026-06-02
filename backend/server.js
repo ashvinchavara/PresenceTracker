@@ -628,7 +628,6 @@ app.get('/api/user_timetable/:userId', async (req, res) => {
             LEFT JOIN timetable_days td ON t.id = td.timetable_id
             LEFT JOIN departments d ON t.dept_id = d.id
             WHERE tu.user_id = ?
-              AND t.end_date >= CURDATE()
             GROUP BY t.id
         `;
         const [rows] = await pool.query(query, [req.params.userId]);
