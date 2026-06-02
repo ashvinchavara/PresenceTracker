@@ -581,19 +581,19 @@ class _RootDashboardState extends State<RootDashboard> {
     final todayName = dayNames[now.weekday - 1];
 
     // Helper to sort tasks chronologically
-    void sortTasks(List<Map<String, dynamic>> list) {
-      int toMinutes(String? timeStr) {
-        if (timeStr == null) return 0;
-        timeStr = timeStr.trim().toUpperCase();
-        final parts = timeStr.split(' ');
-        final timeParts = parts[0].split(':');
-        int h = int.parse(timeParts[0]);
-        int m = int.parse(timeParts[1]);
-        if (timeStr.contains('PM') && h < 12) h += 12;
-        if (timeStr.contains('AM') && h == 12) h = 0;
-        return h * 60 + m;
-      }
+    int toMinutes(String? timeStr) {
+      if (timeStr == null) return 0;
+      timeStr = timeStr.trim().toUpperCase();
+      final parts = timeStr.split(' ');
+      final timeParts = parts[0].split(':');
+      int h = int.parse(timeParts[0]);
+      int m = int.parse(timeParts[1]);
+      if (timeStr.contains('PM') && h < 12) h += 12;
+      if (timeStr.contains('AM') && h == 12) h = 0;
+      return h * 60 + m;
+    }
 
+    void sortTasks(List<Map<String, dynamic>> list) {
       list.sort((a, b) {
         final startA = (a['time_range'] as String?)?.split(' - ').first;
         final startB = (b['time_range'] as String?)?.split(' - ').first;
@@ -606,11 +606,20 @@ class _RootDashboardState extends State<RootDashboard> {
        final days = (t['day_of_week'] as String?)?.split(',') ?? [];
        return days.contains(todayName);
     }).toList();
+    
     if (todayTasks.isNotEmpty) {
       sortTasks(todayTasks);
-      _upcomingTasks = todayTasks;
-      _displayDay = 'Today\'s Schedule';
-      return;
+      
+      final currentMinutes = now.hour * 60 + now.minute;
+      final lastTaskEndStr = (todayTasks.last['time_range'] as String?)?.split(' - ').last;
+      
+      // If the current time is still before or equal to the end time of the last task today, show today.
+      // Otherwise, we skip today and look for the next day.
+      if (currentMinutes <= toMinutes(lastTaskEndStr)) {
+        _upcomingTasks = todayTasks;
+        _displayDay = 'Today\'s Schedule';
+        return;
+      }
     }
 
     // 2. Find next day with tasks
