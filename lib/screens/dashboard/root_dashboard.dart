@@ -31,7 +31,7 @@ class RootDashboard extends StatefulWidget {
   State<RootDashboard> createState() => _RootDashboardState();
 }
 
-class _RootDashboardState extends State<RootDashboard> {
+class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserver {
   final ApiService _apiService = ApiService();
   
   double _attendancePercentage = 0.0;
@@ -70,6 +70,7 @@ class _RootDashboardState extends State<RootDashboard> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _fetchDashboardData();
     _startHealthPolling();
     _requestPermissions();
@@ -209,6 +210,7 @@ class _RootDashboardState extends State<RootDashboard> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _uiSyncTimer?.cancel();
     _testTimer?.cancel();
     _healthCheckTimer?.cancel();
@@ -216,6 +218,15 @@ class _RootDashboardState extends State<RootDashboard> {
     _btMonitoringTimer?.cancel();
     FlutterForegroundTask.removeTaskDataCallback(_onReceiveForegroundData);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      print('Dashboard: App resumed, re-checking data and automation...');
+      _fetchDashboardData();
+      _loadMeshState();
+    }
   }
 
   void _startBluetoothMonitoring() {
