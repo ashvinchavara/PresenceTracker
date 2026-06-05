@@ -6,6 +6,7 @@ import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 import 'ble_mesh_service.dart';
 import 'api_service.dart';
 import 'session_automation_service.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 /// Top-level callback that the foreground service calls to set the handler.
 /// Must be a top-level or static function.
