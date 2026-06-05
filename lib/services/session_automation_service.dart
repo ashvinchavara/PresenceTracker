@@ -81,8 +81,8 @@ void onSessionEnd() async {
   // Send stop command to the foreground service
   FlutterForegroundTask.sendDataToTask('stop');
   
-  // Also stop the service directly as a fallback
-  await Future.delayed(const Duration(seconds: 3));
+  // Also stop the service directly as a fallback (give enough time for next session scheduling)
+  await Future.delayed(const Duration(seconds: 30));
   await FlutterForegroundTask.stopService();
 
   print('BACKGROUND LOG: Foreground service stopped.');

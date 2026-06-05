@@ -25,9 +25,10 @@
                 <h2>Adtendo<span>Admin</span></h2>
             </div>
 
-            <div class="db-status-container">
+            <div class="db-status-container" title="Click to switch server">
                 <div id="db-status" class="status-indicator"></div>
-                <span id="connection-text">Connecting...</span>
+                <span id="connection-text" style="flex: 1;">Connecting...</span>
+                <span class="material-symbols-rounded" style="font-size: 16px; opacity: 0.4;">unfold_more</span>
             </div>
 
             <ul class="nav-links">
@@ -662,6 +663,65 @@
                 <button class="btn-primary" onclick="saveUserEditModal()" style="width: 100%; margin-top: 10px;">Save
                     Changes</button>
             </div>
+        </div>
+    </div>
+
+    <!-- DB Server Switch Modal -->
+    <div id="db-switch-modal" class="modal-overlay" style="z-index: 2000;">
+        <div class="glass-panel" style="width: 420px; padding: 36px; border-radius: 24px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px;">
+                <div>
+                    <h3 style="font-size: 18px; font-weight: 700;">Database Server</h3>
+                    <p class="text-muted" style="font-size: 13px; margin-top: 4px;">Choose which backend to connect to</p>
+                </div>
+                <button class="btn-icon" onclick="document.getElementById('db-switch-modal').style.display='none'">
+                    <span class="material-symbols-rounded">close</span>
+                </button>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 14px;">
+                <!-- Cloud Option -->
+                <div id="choice-cloud" onclick="switchDatabaseMode('cloud')" style="
+                    padding: 20px 22px; border-radius: 16px; border: 2px solid var(--glass-border);
+                    cursor: pointer; transition: all 0.2s ease;
+                    background: rgba(255,255,255,0.03);
+                ">
+                    <div style="display: flex; align-items: center; gap: 14px;">
+                        <div style="width: 42px; height: 42px; border-radius: 12px; background: rgba(16,185,129,0.15); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                            <span class="material-symbols-rounded" style="color: var(--success); font-size: 22px;">cloud</span>
+                        </div>
+                        <div style="flex: 1;">
+                            <div style="font-weight: 700; font-size: 15px;">Cloud Server</div>
+                            <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Aiven MySQL · Remote Access</div>
+                        </div>
+                        <span class="choice-indicator material-symbols-rounded" style="color: var(--success); font-size: 20px; display: none;">check_circle</span>
+                    </div>
+                </div>
+
+                <!-- Local Option -->
+                <div id="choice-local" onclick="switchDatabaseMode('local')" style="
+                    padding: 20px 22px; border-radius: 16px; border: 2px solid var(--glass-border);
+                    cursor: pointer; transition: all 0.2s ease;
+                    background: rgba(255,255,255,0.03);
+                ">
+                    <div style="display: flex; align-items: center; gap: 14px;">
+                        <div style="width: 42px; height: 42px; border-radius: 12px; background: rgba(245,158,11,0.15); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                            <span class="material-symbols-rounded" style="color: var(--warning); font-size: 22px;">computer</span>
+                        </div>
+                        <div style="flex: 1;">
+                            <div style="font-weight: 700; font-size: 15px;">Local Server</div>
+                            <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">localhost:3000 · LAN Only</div>
+                        </div>
+                        <span class="choice-indicator material-symbols-rounded" style="color: var(--warning); font-size: 20px; display: none;">check_circle</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="db-switch-error" style="
+                display: none; margin-top: 18px; padding: 12px 16px;
+                background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3);
+                border-radius: 10px; font-size: 13px; color: var(--danger);
+            "></div>
         </div>
     </div>
 

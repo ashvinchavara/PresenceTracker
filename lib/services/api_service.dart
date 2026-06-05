@@ -129,7 +129,25 @@ class ApiService {
 
     final data = await _fetchWithCache('/user_timetable/$userId');
     if (data != null) {
+      // Cache in SharedPreferences so it is fully accessible to background service isolates offline
+      await prefs.setString('cached_user_timetable', jsonEncode(data));
       return (data as List<dynamic>).cast<Map<String, dynamic>>();
+    }
+    return [];
+  }
+
+  Future<List<Map<String, dynamic>>> getCachedUserTimetableOffline() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonStr = prefs.getString('cached_user_timetable');
+    if (jsonStr != null) {
+      try {
+        final decoded = jsonDecode(jsonStr);
+        if (decoded is List) {
+          return decoded.cast<Map<String, dynamic>>();
+        }
+      } catch (e) {
+        print('ApiService: Error decoding offline timetable cache: $e');
+      }
     }
     return [];
   }

@@ -22,6 +22,7 @@ class BleSessionTaskHandler extends TaskHandler {
   Timer? _uploadTimer;
   Timer? _verifyTimer;
   Timer? _endTimer;
+  String _currentActivityName = 'Session';
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -87,18 +88,38 @@ class BleSessionTaskHandler extends TaskHandler {
     }
 
     // Update notification
-    FlutterForegroundTask.updateService(
-      notificationTitle: 'Tracking: $activityName',
-      notificationText: 'BLE mesh active • Session ends at ${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}',
-      notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
-    );
+    _currentActivityName = activityName;
+    final btState = await FlutterBluePlus.adapterState.first;
+    if (btState != BluetoothAdapterState.on) {
+      FlutterForegroundTask.updateService(
+        notificationTitle: '⚠️ Bluetooth is OFF',
+        notificationText: 'Turn ON Bluetooth to track attendance for $activityName',
+        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
+      );
+    } else {
+      FlutterForegroundTask.updateService(
+        notificationTitle: 'Tracking: $activityName',
+        notificationText: 'BLE mesh active • Session ends at ${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}',
+        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
+      );
+    }
   }
 
   @override
   void onRepeatEvent(DateTime timestamp) {
+    if (_bleService.isBtAlertShown) {
+      FlutterForegroundTask.updateService(
+        notificationTitle: '⚠️ Bluetooth is OFF',
+        notificationText: 'Turn ON Bluetooth to track attendance for $_currentActivityName',
+        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
+      );
+      return;
+    }
+
     // Periodic update: refresh notification with peer count
     final peers = _bleService.getLivePeers();
     FlutterForegroundTask.updateService(
+      notificationTitle: 'Tracking: $_currentActivityName',
       notificationText: 'Peers scanned: ${peers.length} • Running...',
       notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
     );
@@ -168,7 +189,11 @@ class BleSessionTaskHandler extends TaskHandler {
         
         print('FG_SERVICE: Session ended. Scheduling next...');
         final api = ApiService();
-        final tasks = await api.fetchUserTimetable(userId);
+        List<Map<String, dynamic>> tasks = await api.getCachedUserTimetableOffline();
+        if (tasks.isEmpty) {
+          print('FG_SERVICE: Offline cache empty, fetching from API...');
+          tasks = await api.fetchUserTimetable(userId);
+        }
         
         // Save next alarm data for the alarm manager to pick up
         // The main app's SessionAutomationService will handle this
@@ -177,6 +202,8 @@ class BleSessionTaskHandler extends TaskHandler {
           // Import and use the scheduling logic
           final SessionScheduler scheduler = SessionScheduler();
           await scheduler.scheduleNextFromForeground(tasks, userId, isRoot);
+        } else {
+          print('FG_SERVICE: No tasks found to schedule next.');
         }
       }
     } catch (e) {
@@ -264,6 +291,11 @@ class SessionScheduler {
             nextEndTime = end;
             nextTask = task;
           }
+        } else if (now.isAfter(start) && now.isBefore(end)) {
+          nextTask = task;
+          nextStartTime = start;
+          nextEndTime = end;
+          break;
         }
       }
       if (nextTask != null && nextStartTime != null && nextStartTime.difference(now).inHours < 24) break;
@@ -280,37 +312,44 @@ class SessionScheduler {
         'is_test': nextTask['is_test'] == true,
         'status': 'scheduled',
       };
+
       await prefs.setString('session_alarm', jsonEncode(alarmData));
       print('FG_SERVICE: Next session alarm saved: ${nextTask['activity_name']} at $nextStartTime');
 
-      // Actually schedule the alarms via AndroidAlarmManager
-      try {
-        await AndroidAlarmManager.initialize();
-        
-        print('FG_SERVICE: Scheduling start alarm at $nextStartTime');
-        await AndroidAlarmManager.oneShotAt(
-          nextStartTime,
-          1001, // _startAlarmId
-          onSessionStart,
-          exact: true,
-          wakeup: true,
-          rescheduleOnReboot: true,
-        );
-
-        if (nextEndTime != null) {
-          print('FG_SERVICE: Scheduling end alarm at $nextEndTime');
+      if (nextStartTime.isAfter(now)) {
+        // Actually schedule the alarms via AndroidAlarmManager
+        try {
+          await AndroidAlarmManager.initialize();
+          
+          print('FG_SERVICE: Scheduling start alarm at $nextStartTime');
           await AndroidAlarmManager.oneShotAt(
-            nextEndTime,
-            1002, // _endAlarmId
-            onSessionEnd,
+            nextStartTime,
+            1001, // _startAlarmId
+            onSessionStart,
             exact: true,
             wakeup: true,
             rescheduleOnReboot: true,
           );
+
+          if (nextEndTime != null) {
+            print('FG_SERVICE: Scheduling end alarm at $nextEndTime');
+            await AndroidAlarmManager.oneShotAt(
+              nextEndTime,
+              1002, // _endAlarmId
+              onSessionEnd,
+              exact: true,
+              wakeup: true,
+              rescheduleOnReboot: true,
+            );
+          }
+          print('FG_SERVICE: Next session alarms registered successfully.');
+        } catch (e) {
+          print('FG_SERVICE: Failed to schedule alarms from foreground: $e');
         }
-        print('FG_SERVICE: Next session alarms registered successfully.');
-      } catch (e) {
-        print('FG_SERVICE: Failed to schedule alarms from foreground: $e');
+      } else {
+        // Start immediately (session already in progress)
+        print('FG_SERVICE: Session already in progress, starting foreground service now.');
+        onSessionStart();
       }
     }
   }
