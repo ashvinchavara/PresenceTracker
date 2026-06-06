@@ -20,9 +20,11 @@ void onSessionStart() async {
 
   final prefs = await SharedPreferences.getInstance();
   await prefs.reload();
-  final alarmData = prefs.getString('session_alarm');
+  final isTestMode = prefs.getBool('is_test_mode') ?? false;
+  final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+  final alarmData = prefs.getString(alarmKey);
   if (alarmData == null) {
-    print('BACKGROUND LOG: No session_alarm found. Aborting.');
+    print('BACKGROUND LOG: No alarm found for key $alarmKey. Aborting.');
     return;
   }
 
@@ -31,9 +33,9 @@ void onSessionStart() async {
 
   // Mark as active
   data['status'] = 'active';
-  await prefs.setString('session_alarm', jsonEncode(data));
+  await prefs.setString(alarmKey, jsonEncode(data));
 
-  print('BACKGROUND LOG: Starting foreground service for $activityName');
+  print('BACKGROUND LOG: Starting foreground service for $activityName (isTestMode: $isTestMode)');
 
   // Initialize the foreground task configuration
   FlutterForegroundTask.init(
@@ -96,14 +98,19 @@ class SessionAutomationService {
   Future<Map<String, dynamic>?> getActiveAlarm() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
-    final data = prefs.getString(_alarmKey);
+    final isTestMode = prefs.getBool('is_test_mode') ?? false;
+    final alarmKey = isTestMode ? 'test_session_alarm' : _alarmKey;
+    final data = prefs.getString(alarmKey);
     if (data == null) return null;
     return jsonDecode(data);
   }
 
   Future<void> cancelAllSessions() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_alarmKey);
+    await prefs.reload();
+    final isTestMode = prefs.getBool('is_test_mode') ?? false;
+    final alarmKey = isTestMode ? 'test_session_alarm' : _alarmKey;
+    await prefs.remove(alarmKey);
     await AndroidAlarmManager.cancel(_startAlarmId);
     await AndroidAlarmManager.cancel(_endAlarmId);
     

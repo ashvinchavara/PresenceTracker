@@ -31,7 +31,9 @@ class BleSessionTaskHandler extends TaskHandler {
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
-    final alarmData = prefs.getString('session_alarm');
+    final isTestMode = prefs.getBool('is_test_mode') ?? false;
+    final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+    final alarmData = prefs.getString(alarmKey);
     if (alarmData == null) {
       print('FG_SERVICE: No session_alarm data found. Stopping service.');
       FlutterForegroundTask.stopService();
@@ -56,14 +58,16 @@ class BleSessionTaskHandler extends TaskHandler {
 
     // Mark as active
     data['status'] = 'active';
-    await prefs.setString('session_alarm', jsonEncode(data));
+    await prefs.setString(alarmKey, jsonEncode(data));
 
     // Calculate phase timers
     final endTime = DateTime.parse(data['end_time']);
     final now = DateTime.now();
 
     // Schedule upload (2 min before end)
-    final uploadTime = endTime.subtract(const Duration(minutes: 2));
+    final uploadTime = isTest 
+        ? endTime.subtract(const Duration(seconds: 60)) 
+        : endTime.subtract(const Duration(minutes: 2));
     if (uploadTime.isAfter(now)) {
       final uploadDelay = uploadTime.difference(now);
       print('FG_SERVICE: Upload scheduled in ${uploadDelay.inSeconds}s');
@@ -71,7 +75,9 @@ class BleSessionTaskHandler extends TaskHandler {
     }
 
     // Schedule verification (1 min before end)
-    final verifyTime = endTime.subtract(const Duration(minutes: 1));
+    final verifyTime = isTest 
+        ? endTime.subtract(const Duration(seconds: 30)) 
+        : endTime.subtract(const Duration(minutes: 1));
     if (verifyTime.isAfter(now)) {
       final verifyDelay = verifyTime.difference(now);
       print('FG_SERVICE: Verification scheduled in ${verifyDelay.inSeconds}s');
@@ -177,16 +183,24 @@ class BleSessionTaskHandler extends TaskHandler {
       await _bleService.endMeshTask();
 
       final prefs = await SharedPreferences.getInstance();
-      final alarmData = prefs.getString('session_alarm');
+      final isTestMode = prefs.getBool('is_test_mode') ?? false;
+      final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+      final alarmData = prefs.getString(alarmKey);
       
       // Clear current alarm
-      await prefs.remove('session_alarm');
+      await prefs.remove(alarmKey);
+      if (isTestMode) {
+        await prefs.remove('test_mode_tasks');
+        await prefs.remove('test_start_time');
+        await prefs.remove('test_end_time');
+        await prefs.setBool('is_test_mode', false);
+      }
 
       // CHAINING: Schedule next session
       if (alarmData != null) {
         final data = jsonDecode(alarmData);
         final userId = data['user_id'].toString();
-        final isRoot = data['is_root'] == true;
+        final isRoot = isTestMode ? (prefs.getBool('is_root_user') ?? false) : (data['is_root'] == true);
         
         print('FG_SERVICE: Session ended. Scheduling next...');
         final api = ApiService();

@@ -20,12 +20,17 @@ class NodeRoleProvider with ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('is_test_mode', value);
 
+    final automation = SessionAutomationService();
+
     if (value) {
       final now = DateTime.now();
       
       final t1Start = now.add(const Duration(minutes: 1));
-      final t1End = t1Start.add(const Duration(minutes: 4)); // 4 minutes total
+      final t1End = t1Start.add(const Duration(minutes: 2)); // 2 minutes run time after start
       
+      await prefs.setString('test_start_time', t1Start.toIso8601String());
+      await prefs.setString('test_end_time', t1End.toIso8601String());
+
       final dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
       final todayName = dayNames[now.weekday - 1];
 
@@ -55,17 +60,68 @@ class NodeRoleProvider with ChangeNotifier {
       ];
       
       await prefs.setString('test_mode_tasks', jsonEncode(testTasks));
+
+      final testAlarmData = {
+        'task_id': 9901,
+        'user_id': _currentUserNode?.id.toString() ?? '',
+        'activity_name': 'Test Activity',
+        'start_time': t1Start.toIso8601String(),
+        'end_time': t1End.toIso8601String(),
+        'is_root': true,
+        'is_test': true,
+        'status': 'scheduled',
+      };
+
+      await prefs.setString('test_session_alarm', jsonEncode(testAlarmData));
       
-      // Trigger background automation to pick up the new test schedule
-      final automation = SessionAutomationService();
-      await automation.cancelAllSessions(); // Clear existing normal alarms
-      await automation.scheduleNextSessionIfNeeded(
-          testTasks.cast<Map<String, dynamic>>(), _currentUserNode?.id.toString() ?? '', true); // true = force upload power
+      // Cancel existing normal alarms
+      await automation.cancelAllSessions();
+
+      // Schedule exact test alarms
+      print('Automation: Scheduling test start alarm at $t1Start');
+      await AndroidAlarmManager.oneShotAt(
+        t1Start,
+        1001, // _startAlarmId
+        onSessionStart,
+        exact: true,
+        wakeup: true,
+        rescheduleOnReboot: true,
+      );
+
+      print('Automation: Scheduling test end alarm at $t1End');
+      await AndroidAlarmManager.oneShotAt(
+        t1End,
+        1002, // _endAlarmId
+        onSessionEnd,
+        exact: true,
+        wakeup: true,
+        rescheduleOnReboot: true,
+      );
           
     } else {
-      await prefs.remove('test_mode_tasks');
-      final automation = SessionAutomationService();
       await automation.cancelAllSessions();
+      
+      // Clean up test mode keys
+      await prefs.remove('test_mode_tasks');
+      await prefs.remove('test_session_alarm');
+      await prefs.remove('test_start_time');
+      await prefs.remove('test_end_time');
+
+      // Immediately restore real timetable scheduling
+      final jsonStr = prefs.getString('cached_user_timetable');
+      if (jsonStr != null) {
+        try {
+          final decoded = jsonDecode(jsonStr);
+          if (decoded is List) {
+            final tasks = decoded.cast<Map<String, dynamic>>();
+            await automation.scheduleNextSessionIfNeeded(
+                tasks, _currentUserNode?.id.toString() ?? '', canUpload);
+            print('Automation: Real timetable alarms restored.');
+          }
+        } catch (e) {
+          print('Error restoring real timetable alarms: $e');
+        }
+      }
     }
   }
 
@@ -73,13 +129,15 @@ class NodeRoleProvider with ChangeNotifier {
   bool get isLoading => _isLoading;
   bool get isRootNode => canUpload;
   
+  bool get _realCanUpload {
+    if (_currentUserNode == null) return false;
+    if (_currentUserNode!.canUpload) return true;
+    return _allowedUploadRoles.contains(_currentUserNode!.desig);
+  }
+
   bool get canUpload {
     if (_isTestMode) return true;
-    if (_currentUserNode == null) return false;
-    // Check the user's own can_upload flag first (set from admin dashboard)
-    if (_currentUserNode!.canUpload) return true;
-    // Also check against the role-based allowed upload roles list
-    return _allowedUploadRoles.contains(_currentUserNode!.desig);
+    return _realCanUpload;
   }
 
   Future<void> loadSession() async {
@@ -101,6 +159,8 @@ class NodeRoleProvider with ChangeNotifier {
 
   Future<void> refreshPermissions() async {
     _allowedUploadRoles = await _apiService.fetchAllowedUploadRoles();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('is_root_user', _realCanUpload);
     notifyListeners();
   }
 

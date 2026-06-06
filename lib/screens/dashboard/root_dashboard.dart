@@ -132,10 +132,14 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
     }
   }
 
-  void _updateTestModeTimer() {
+  void _updateTestModeTimer() async {
     if (!mounted) return;
     final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
     if (!userProvider.isTestMode) return;
+
+    final alarm = await SessionAutomationService().getActiveAlarm();
+    if (!mounted) return;
+    _currentAlarm = alarm;
 
     if (_currentAlarm != null) {
       final now = DateTime.now();
@@ -331,63 +335,43 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
 
   void _skipTestPhase() async {
     final prefs = await SharedPreferences.getInstance();
-    final tasksJson = prefs.getString('test_mode_tasks');
-    if (tasksJson == null) return;
-    
-    List<dynamic> tasks = jsonDecode(tasksJson);
+    final testAlarmStr = prefs.getString('test_session_alarm');
+    if (testAlarmStr == null) return;
+
+    final testAlarm = jsonDecode(testAlarmStr);
     final now = DateTime.now();
-    bool changed = false;
+    final testEndTime = now.add(const Duration(minutes: 2));
 
-    for (var task in tasks) {
-      DateTime start = DateTime.parse(task['start_time']);
-      DateTime end = DateTime.parse(task['end_time']);
-      
-      // If waiting for this task to start, fast-forward to start
-      if (now.isBefore(start)) {
-        task['start_time'] = now.toIso8601String();
-        // End time = now + 5 mins, meaning upload time is now + 3 mins
-        task['end_time'] = now.add(const Duration(minutes: 5)).toIso8601String();
-        changed = true;
-        
-        await prefs.setBool('is_mesh_active', true);
-        await prefs.setString('mesh_task_id', task['id'].toString());
-        break;
-      } 
-      // If currently active, skip to the next phase
-      else if (now.isAfter(start) && now.isBefore(end)) {
-        final uploadTime = end.subtract(const Duration(minutes: 2));
-        if (now.isBefore(uploadTime)) {
-          // We are in scanning phase. Skip to upload phase (upload in 5 seconds).
-          task['end_time'] = now.add(const Duration(minutes: 2, seconds: 5)).toIso8601String();
-        } else {
-          // We are in upload phase. Skip to end (end in 5 seconds).
-          task['end_time'] = now.add(const Duration(seconds: 5)).toIso8601String();
-        }
-        changed = true;
-        break;
-      }
-    }
+    // Cancel pending start alarm (alarm 1001)
+    await AndroidAlarmManager.cancel(1001);
 
-    if (changed) {
-      await prefs.setString('test_mode_tasks', jsonEncode(tasks));
-      final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
-      final automation = SessionAutomationService();
-      
-      // CRITICAL: Cancel existing alarms and clear the preference so reschedule works
-      await automation.cancelAllSessions();
-      
-      await automation.scheduleNextSessionIfNeeded(
-          tasks.cast<Map<String, dynamic>>(), userProvider.currentUserNode?.id.toString() ?? '', userProvider.isRootNode);
-          
-      // Refresh local state immediately
-      await _loadMeshState();
-      _updateTestModeTimer();
-      
-      // "skip should ask for manual entry and list the users"
-      if (userProvider.canUpload || true) {
-         _showActiveMeshDetails();
-      }
-    }
+    // Update test_session_alarm in preferences to reflect running state
+    testAlarm['start_time'] = now.toIso8601String();
+    testAlarm['end_time'] = testEndTime.toIso8601String();
+    testAlarm['status'] = 'active';
+
+    await prefs.setString('test_session_alarm', jsonEncode(testAlarm));
+    await prefs.setString('test_start_time', now.toIso8601String());
+    await prefs.setString('test_end_time', testEndTime.toIso8601String());
+
+    // Schedule test END alarm (alarm 1002) exactly 2 minutes from now
+    print('Dashboard: Skip clicked. Scheduling test END alarm at $testEndTime');
+    await AndroidAlarmManager.oneShotAt(
+      testEndTime,
+      1002, // _endAlarmId
+      onSessionEnd,
+      exact: true,
+      wakeup: true,
+      rescheduleOnReboot: true,
+    );
+
+    // Immediately trigger start flow
+    onSessionStart();
+
+    // Refresh dashboard UI state
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _loadMeshState();
+    _updateTestModeTimer();
   }
 
   Future<void> _fetchDashboardData() async {
@@ -846,6 +830,81 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
     );
   }
 
+  Widget _buildTestModeCountdownBanner(NodeRoleProvider userProvider) {
+    String title = '';
+    switch (_testStage) {
+      case 'waiting': title = 'Next Test Activity'; break;
+      case 'active': title = 'Test Activity Active'; break;
+      case 'transitioning': title = 'Starting Test...'; break;
+      case 'finished': title = 'Test Finished'; break;
+      default: title = 'Processing Test...'; break;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.orange.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.orange.withOpacity(0.3), width: 2),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.science, color: Colors.orange, size: 30),
+              const SizedBox(width: 15),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.orange)),
+                    Text(
+                      _testStage == 'active' 
+                        ? "Test session ends in ${(_testCountdown ~/ 60).toString().padLeft(2, '0')}:${(_testCountdown % 60).toString().padLeft(2, '0')}"
+                        : "Test starts in ${(_testCountdown ~/ 60).toString().padLeft(2, '0')}:${(_testCountdown % 60).toString().padLeft(2, '0')}",
+                      style: const TextStyle(fontSize: 13, color: Colors.orange),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              if (_testStage == 'waiting') ...[
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _skipTestPhase,
+                    style: OutlinedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      side: const BorderSide(color: Colors.orange),
+                      foregroundColor: Colors.orange,
+                    ),
+                    child: const Text('Skip'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _endTestMode,
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    side: const BorderSide(color: Colors.red),
+                    foregroundColor: Colors.red,
+                  ),
+                  child: const Text('Cancel'),
+                ),
+              ),
+            ],
+          )
+        ],
+      ),
+    );
+  }
+
   Widget _buildActiveMeshIndicator() {
     final canUpload = Provider.of<NodeRoleProvider>(context, listen: false).canUpload;
     
@@ -1096,6 +1155,8 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
 
+                  if (Provider.of<NodeRoleProvider>(context).isTestMode)
+                    _buildTestModeCountdownBanner(Provider.of<NodeRoleProvider>(context, listen: false)),
                   if (_isMeshActive) _buildActiveMeshIndicator(),
                   Center(
                     child: InkWell(
