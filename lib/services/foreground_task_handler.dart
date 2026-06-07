@@ -25,6 +25,8 @@ class BleSessionTaskHandler extends TaskHandler {
   Timer? _verifyTimer;
   Timer? _endTimer;
   Timer? _startMeshTimer;
+  Timer? _countdownTimer;   // 1-second tick during waiting phase
+  Timer? _btWatchdogTimer;  // 10-second BT check during waiting phase
   bool _isMeshStarted = false;
   String _currentActivityName = 'Session';
 
@@ -60,14 +62,39 @@ class BleSessionTaskHandler extends TaskHandler {
       final waitDuration = startTime.difference(now);
       print('FG_SERVICE: Waiting ${waitDuration.inSeconds}s before starting BLE mesh...');
 
-      FlutterForegroundTask.updateService(
-        notificationTitle: 'Waiting: $activityName',
-        notificationText: 'Starting in ${waitDuration.inSeconds}s...',
-        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
-      );
+      // Countdown notification: update every second
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+        final remaining = startTime.difference(DateTime.now()).inSeconds;
+        if (remaining > 0) {
+          FlutterForegroundTask.updateService(
+            notificationTitle: 'Waiting: $_currentActivityName',
+            notificationText: 'Starting in ${remaining}s...',
+            notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
+          );
+        } else {
+          t.cancel();
+        }
+      });
+
+      // BT watchdog during waiting phase: alert every 10s if BT is off
+      _btWatchdogTimer = Timer.periodic(const Duration(seconds: 10), (t) async {
+        final btState = await FlutterBluePlus.adapterState.first;
+        if (btState != BluetoothAdapterState.on) {
+          print('FG_SERVICE: Waiting-phase BT watchdog: Bluetooth is OFF. Showing alert.');
+          FlutterForegroundTask.updateService(
+            notificationTitle: '⚠️ Bluetooth is OFF',
+            notificationText: 'Turn ON Bluetooth — $_currentActivityName starts soon',
+            notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
+          );
+          // Fire high-importance local notification so it pops up even in background
+          await NotificationService().showBluetoothAlert();
+        }
+      });
 
       _startMeshTimer = Timer(waitDuration, () async {
         print('FG_SERVICE: Wait duration over. Starting BLE mesh now!');
+        _countdownTimer?.cancel();
+        _btWatchdogTimer?.cancel();
         _isMeshStarted = true;
         await _bleService.initializeMeshNode(
           role, taskId, userId, activityName,
@@ -89,9 +116,6 @@ class BleSessionTaskHandler extends TaskHandler {
           print('FG_SERVICE: Error updating status to active: $e');
         }
 
-        // Show start notification
-        // Note: NotificationService assumed available in scope or needs import
-        
         _scheduleTimers(endTime, isTest);
       });
     } else {
@@ -166,27 +190,9 @@ class BleSessionTaskHandler extends TaskHandler {
 
   @override
   void onRepeatEvent(DateTime timestamp) async {
-    if (!_isMeshStarted) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.reload();
-      final isTestMode = prefs.getBool('is_test_mode') ?? false;
-      final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
-      final alarmData = prefs.getString(alarmKey);
-      if (alarmData != null) {
-        final data = jsonDecode(alarmData);
-        final startTime = DateTime.parse(data['start_time']);
-        final now = DateTime.now();
-        final waitSecs = startTime.difference(now).inSeconds;
-        if (waitSecs > 0) {
-          FlutterForegroundTask.updateService(
-            notificationTitle: 'Waiting: $_currentActivityName',
-            notificationText: 'Starting in ${waitSecs}s...',
-            notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
-          );
-          return;
-        }
-      }
-    }
+    // While waiting for session start: countdown is handled by _countdownTimer (1s ticks).
+    // onRepeatEvent fires every 10s — skip if not yet started.
+    if (!_isMeshStarted) return;
 
     if (_bleService.isBtAlertShown) {
       FlutterForegroundTask.updateService(
@@ -303,6 +309,8 @@ class BleSessionTaskHandler extends TaskHandler {
   Future<void> _onSkip() async {
     print('FG_SERVICE: _onSkip triggered');
     _startMeshTimer?.cancel();
+    _countdownTimer?.cancel();
+    _btWatchdogTimer?.cancel();
     
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
@@ -343,6 +351,8 @@ class BleSessionTaskHandler extends TaskHandler {
     _verifyTimer?.cancel();
     _endTimer?.cancel();
     _startMeshTimer?.cancel();
+    _countdownTimer?.cancel();
+    _btWatchdogTimer?.cancel();
   }
 
   @override
