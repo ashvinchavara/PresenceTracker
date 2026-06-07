@@ -40,6 +40,7 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
   List<Map<String, dynamic>> _summaryData = [];
   String _displayDay = 'Today';
   bool _isLoading = true;
+  bool _isSyncing = false;
 
   // --- MESH & AUTOMATION STATE ---
   bool _isMeshActive = false;
@@ -438,11 +439,24 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
           _isLoading = false;
         });
       }
+    } else {
+      // No cached data exists: set loading to false so dashboard opens instantly (empty state)
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+
+    // 2. Start asynchronous network sync in the background
+    if (mounted) {
+      setState(() {
+        _isSyncing = true;
+      });
     }
 
     try {
-      print('Dashboard: Fetching data for user $userId');
-      // Fetch concurrently using Future.wait for maximum speed
+      print('Dashboard: Fetching background updates for user $userId');
       final results = await Future.wait([
         _apiService.fetchDashboardStats(userId),
         _apiService.fetchUserTimetable(userId),
@@ -452,9 +466,9 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
       final percentage = results[0] as double;
       final tasks = List<Map<String, dynamic>>.from(results[1] as List);
       final summary = List<Map<String, dynamic>>.from(results[2] as List);
-      print('Dashboard: Received ${tasks.length} tasks');
+      print('Dashboard: Background fetch completed. Received ${tasks.length} tasks');
 
-      // Cache the fresh data
+      // Update offline database cache
       await prefs.setDouble('cached_stats_$userId', percentage);
       await prefs.setString('cached_tasks_$userId', jsonEncode(tasks));
       await prefs.setString('cached_summary_$userId', jsonEncode(summary));
@@ -464,28 +478,24 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
           _attendancePercentage = percentage;
           _summaryData = summary;
           _processUpcomingTasks(tasks);
-          _isLoading = false;
         });
 
-        // Automation
+        // Background session automation check
         if (userProvider.currentUserNode != null) {
-          print('Dashboard: Triggering automation for node: ${userProvider.currentUserNode!.id}');
           await _automationService.scheduleNextSessionIfNeeded(
             tasks, 
             userProvider.currentUserNode!.id, 
             userProvider.canUpload
           );
-          // Refresh state
           _loadMeshState();
-        } else {
-          print('Dashboard: currentUserNode is NULL, skipping automation');
         }
       }
     } catch (e) {
-      print('Dashboard: Error fetching online data: $e');
+      print('Dashboard: Background sync failed/offline: $e');
+    } finally {
       if (mounted) {
         setState(() {
-          _isLoading = false;
+          _isSyncing = false;
         });
       }
     }
@@ -1055,6 +1065,17 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
                     ],
                   ),
                 ),
+                if (_isSyncing) ...[
+                  const SizedBox(width: 6),
+                  const SizedBox(
+                    width: 10,
+                    height: 10,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF0078D4)),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

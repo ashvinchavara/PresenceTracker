@@ -5,6 +5,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'providers/node_role_provider.dart';
 import 'providers/theme_provider.dart';
 import 'screens/auth/auth_screen.dart';
+import 'screens/auth/startup_screen.dart';
 import 'core/api_config.dart';
 
 import 'screens/dashboard/root_dashboard.dart';
@@ -28,10 +29,9 @@ void main() async {
     }
   });
   
-  // Initialize session
+  // Initialize session provider (without blocking startup)
   final roleProvider = NodeRoleProvider();
-  await roleProvider.loadSession();
-
+  
   runApp(
     MultiProvider(
       providers: [
@@ -48,8 +48,6 @@ class PresenceTrackerApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Check if user is already logged in
-    final userNode = Provider.of<NodeRoleProvider>(context).currentUserNode;
     final themeProvider = Provider.of<ThemeProvider>(context);
 
     return MaterialApp(
@@ -69,7 +67,7 @@ class PresenceTrackerApp extends StatelessWidget {
           surface: Colors.black,
         ),
       ),
-      home: userNode == null ? const AuthScreen() : const RootDashboard(),
+      home: const StartupScreen(),
     );
   }
 }
