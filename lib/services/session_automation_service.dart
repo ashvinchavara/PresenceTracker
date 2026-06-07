@@ -157,15 +157,21 @@ class SessionAutomationService {
   Future<void> scheduleNextSessionIfNeeded(List<Map<String, dynamic>> tasks, String userId, bool isRoot) async {
     final prefs = await SharedPreferences.getInstance();
     
-    // Check for existing/stale alarm
+    // Check for existing alarm
     if (prefs.containsKey(_alarmKey)) {
       final alarm = jsonDecode(prefs.getString(_alarmKey)!);
+      final status = alarm['status'];
       final endTime = DateTime.tryParse(alarm['end_time'] ?? '');
-      if (endTime != null && DateTime.now().isAfter(endTime)) {
-        await prefs.remove(_alarmKey);
-      } else {
+      
+      if (status == 'active' && endTime != null && DateTime.now().isBefore(endTime)) {
+        // A session is currently active. Do not interrupt it.
         return; 
       }
+      
+      // Otherwise, cancel the existing scheduled alarm to ensure a fresh schedule
+      await AndroidAlarmManager.cancel(_startAlarmId);
+      await AndroidAlarmManager.cancel(_endAlarmId);
+      await prefs.remove(_alarmKey);
     }
 
     if (tasks.isEmpty) return;
