@@ -3,6 +3,7 @@ import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'foreground_task_handler.dart';
+import 'notification_service.dart';
 
 import 'package:flutter/widgets.dart';
 import 'dart:developer' as developer;
@@ -36,6 +37,14 @@ void onSessionStart() async {
   await prefs.setString(alarmKey, jsonEncode(data));
 
   print('BACKGROUND LOG: Starting foreground service for $activityName (isTestMode: $isTestMode)');
+
+  // Show a local notification to alert the user that the session has started
+  final notifications = NotificationService();
+  await notifications.init();
+  await notifications.showAlert(
+    'Session Started: $activityName',
+    isTestMode ? 'Test mode session is now active.' : 'BLE Mesh is tracking attendance.',
+  );
 
   // Initialize the foreground task configuration
   FlutterForegroundTask.init(
@@ -80,14 +89,39 @@ void onSessionEnd() async {
   WidgetsFlutterBinding.ensureInitialized();
   print('BACKGROUND LOG: onSessionEnd alarm triggered at ${DateTime.now()}');
 
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.reload();
+  final isTestMode = prefs.getBool('is_test_mode') ?? false;
+  final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+
+  // Clean up states in preferences
+  await prefs.remove(alarmKey);
+  await prefs.setBool('is_mesh_active', false);
+  
+  if (isTestMode) {
+    await prefs.remove('test_mode_tasks');
+    await prefs.remove('test_start_time');
+    await prefs.remove('test_end_time');
+    await prefs.setBool('is_test_mode', false);
+  }
+
   // Send stop command to the foreground service
   FlutterForegroundTask.sendDataToTask('stop');
   
-  // Also stop the service directly as a fallback (give enough time for next session scheduling)
-  await Future.delayed(const Duration(seconds: 30));
+  // Stop the service
   await FlutterForegroundTask.stopService();
 
-  print('BACKGROUND LOG: Foreground service stopped.');
+  // Clear any active session/alert notifications and notify user that it has completed
+  final notifications = NotificationService();
+  await notifications.init();
+  await notifications.cancel(100); // BT Alert ID
+  await notifications.cancel(101); // Ongoing Session Notification ID
+  await notifications.showAlert(
+    isTestMode ? 'Test Session Ended' : 'Session Ended',
+    'Attendance tracking has completed.',
+  );
+
+  print('BACKGROUND LOG: Foreground service stopped and state cleaned up.');
 }
 
 class SessionAutomationService {

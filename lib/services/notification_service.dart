@@ -50,10 +50,12 @@ class NotificationService {
 
   Future<void> _createChannels() async {
     const btChannel = AndroidNotificationChannel(
-      'bt_alert',
+      'bt_alert_v2',
       'Bluetooth Alert',
       description: 'Alerts when Bluetooth is turned off during a session',
       importance: Importance.max,
+      playSound: true,
+      enableVibration: true,
     );
     const ongoingChannel = AndroidNotificationChannel(
       'ongoing_session',
@@ -80,16 +82,15 @@ class NotificationService {
   Future<void> showBluetoothAlert() async {
     print('NOTIFICATION_SERVICE: [SHOW_BT_ALERT]');
     const android = AndroidNotificationDetails(
-      'bt_alert',
+      'bt_alert_v2',
       'Bluetooth Alert',
       importance: Importance.max,
       priority: Priority.high,
       ticker: 'Bluetooth is OFF',
       icon: '@drawable/ic_notification',
       largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher_round'),
-      category: AndroidNotificationCategory.alarm,
-      audioAttributesUsage: AudioAttributesUsage.alarm,
-      fullScreenIntent: true,
+      playSound: true,
+      enableVibration: true,
     );
     try {
       await _notifications.show(

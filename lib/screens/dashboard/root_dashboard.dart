@@ -140,6 +140,16 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
+
+    final isTestModeInPrefs = prefs.getBool('is_test_mode') ?? false;
+    if (!isTestModeInPrefs) {
+      print('Dashboard: Test mode turned off in SharedPreferences. Restoring normal state...');
+      userProvider.setTestMode(false);
+      await _loadMeshState();
+      _fetchDashboardData();
+      return;
+    }
+
     final now = DateTime.now();
 
     final alarm = await SessionAutomationService().getActiveAlarm();
@@ -1119,18 +1129,20 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
                       const SizedBox(height: 12),
                       Row(
                         children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: _skipTestPhase,
-                              style: OutlinedButton.styleFrom(
-                                visualDensity: VisualDensity.compact,
-                                side: const BorderSide(color: Colors.orange),
-                                foregroundColor: Colors.orange,
+                          if (_testStage == 'waiting') ...[
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: _skipTestPhase,
+                                style: OutlinedButton.styleFrom(
+                                  visualDensity: VisualDensity.compact,
+                                  side: const BorderSide(color: Colors.orange),
+                                  foregroundColor: Colors.orange,
+                                ),
+                                child: const Text('Skip'),
                               ),
-                              child: const Text('Skip'),
                             ),
-                          ),
-                          const SizedBox(width: 8),
+                            const SizedBox(width: 8),
+                          ],
                           Expanded(
                             child: OutlinedButton(
                               onPressed: _endTestMode,
