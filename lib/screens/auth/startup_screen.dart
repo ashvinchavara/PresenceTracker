@@ -120,34 +120,36 @@ class _StartupScreenState extends State<StartupScreen> with SingleTickerProvider
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Beautiful Pulsing glowing brand logo
+                  // Pulsing glowing app icon
                   AnimatedBuilder(
                     animation: _pulseController,
                     builder: (context, child) {
                       return Transform.scale(
                         scale: _pulseAnimation.value,
                         child: Container(
-                          width: 120,
-                          height: 120,
+                          width: 130,
+                          height: 130,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            gradient: const LinearGradient(
-                              colors: [Color(0xFF0078D4), Color(0xFF3B82F6)],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                            ),
+                            color: Colors.white,
                             boxShadow: [
                               BoxShadow(
-                                color: const Color(0xFF0078D4).withOpacity(0.4),
+                                color: const Color(0xFF0078D4).withOpacity(0.45),
                                 blurRadius: _glowAnimation.value,
-                                spreadRadius: _pulseController.value * 3,
+                                spreadRadius: _pulseController.value * 4,
+                              ),
+                              BoxShadow(
+                                color: const Color(0xFF1E3A5F).withOpacity(0.2),
+                                blurRadius: _glowAnimation.value * 2,
+                                spreadRadius: _pulseController.value * 1.5,
                               ),
                             ],
                           ),
-                          child: const Icon(
-                            Icons.security,
-                            size: 60,
-                            color: Colors.white,
+                          child: ClipOval(
+                            child: Image.asset(
+                              'assets/images/app_icon.png',
+                              fit: BoxFit.cover,
+                            ),
                           ),
                         ),
                       );
@@ -167,7 +169,7 @@ class _StartupScreenState extends State<StartupScreen> with SingleTickerProvider
                   const SizedBox(height: 8),
                   // Subtitle
                   Text(
-                    'Zero-Touch Identity System',
+                    'Zero-Touch Attendance System',
                     style: TextStyle(
                       fontSize: 16,
                       color: isDark ? Colors.blueGrey[300] : Colors.blueGrey[600],
@@ -209,7 +211,7 @@ class _StartupScreenState extends State<StartupScreen> with SingleTickerProvider
               right: 0,
               child: Center(
                 child: Text(
-                  'AD TENDO SYSTEMS',
+                  'ADTENDO SYSTEMS',
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.bold,
