@@ -16,18 +16,13 @@ class NodeRoleProvider with ChangeNotifier {
   bool get isTestMode => _isTestMode;
 
   void setTestMode(bool value) async {
-    _isTestMode = value;
-    notifyListeners();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('is_test_mode', value);
-
     final automation = SessionAutomationService();
 
     if (value) {
       final now = DateTime.now();
-      
       final t1Start = now.add(const Duration(minutes: 1));
-      final t1End = t1Start.add(const Duration(minutes: 2)); // 2 minutes run time after start
+      final t1End = t1Start.add(const Duration(minutes: 2)); // 2 minutes run time after start (total 3 minutes from now)
       
       await prefs.setString('test_start_time', t1Start.toIso8601String());
       await prefs.setString('test_end_time', t1End.toIso8601String());
@@ -124,6 +119,11 @@ class NodeRoleProvider with ChangeNotifier {
         }
       }
     }
+
+    // Set preference flag and provider variable AFTER all writes/scheduling complete
+    await prefs.setBool('is_test_mode', value);
+    _isTestMode = value;
+    notifyListeners();
   }
 
   UserNode? get currentUserNode => _currentUserNode;

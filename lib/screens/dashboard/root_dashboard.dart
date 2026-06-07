@@ -138,12 +138,15 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
     final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
     if (!userProvider.isTestMode) return;
 
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    final now = DateTime.now();
+
     final alarm = await SessionAutomationService().getActiveAlarm();
     if (!mounted) return;
     _currentAlarm = alarm;
 
     if (_currentAlarm != null) {
-      final now = DateTime.now();
       String status = _currentAlarm!['status'] ?? 'scheduled';
       
       if (status == 'scheduled') {
@@ -151,7 +154,6 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
          _testStage = 'waiting';
          _testCountdown = start.difference(now).inSeconds;
          
-         // If time is up but still scheduled, it's transitioning
          if (_testCountdown <= 0) {
            _testStage = 'transitioning';
            _testCountdown = 0;
@@ -169,18 +171,24 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
          _testStage = 'finished';
          _testCountdown = 0;
       }
-      
-      if (_testCountdown < 0) _testCountdown = 0;
-      setState(() {});
     } else {
-      if (_upcomingTasks.isNotEmpty && _testStage != 'finished') {
+      final testStartTimeStr = prefs.getString('test_start_time');
+      if (testStartTimeStr != null) {
+        final start = DateTime.tryParse(testStartTimeStr) ?? now;
         _testStage = 'waiting';
+        _testCountdown = start.difference(now).inSeconds;
+        if (_testCountdown <= 0) {
+          _testStage = 'transitioning';
+          _testCountdown = 0;
+        }
       } else {
         _testStage = 'finished';
+        _testCountdown = 0;
       }
-      _testCountdown = 0;
-      setState(() {});
     }
+    
+    if (_testCountdown < 0) _testCountdown = 0;
+    setState(() {});
   }
 
   Future<void> _requestPermissions() async {
@@ -336,12 +344,27 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
 
   void _skipTestPhase() async {
     final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
     final testAlarmStr = prefs.getString('test_session_alarm');
-    if (testAlarmStr == null) return;
-
-    final testAlarm = jsonDecode(testAlarmStr);
+    final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
     final now = DateTime.now();
     final testEndTime = now.add(const Duration(minutes: 2));
+
+    Map<String, dynamic> testAlarm;
+    if (testAlarmStr != null) {
+      testAlarm = jsonDecode(testAlarmStr);
+    } else {
+      testAlarm = {
+        'task_id': 9901,
+        'user_id': userProvider.currentUserNode?.id.toString() ?? '',
+        'activity_name': 'Test Activity',
+        'start_time': now.toIso8601String(),
+        'end_time': testEndTime.toIso8601String(),
+        'is_root': true,
+        'is_test': true,
+        'status': 'active',
+      };
+    }
 
     // Cancel pending start alarm (alarm 1001)
     await AndroidAlarmManager.cancel(1001);
