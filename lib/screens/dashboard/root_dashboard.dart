@@ -209,6 +209,7 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
       Permission.bluetoothAdvertise,
       Permission.bluetoothConnect,
       Permission.location,
+      Permission.scheduleExactAlarm,
     ].request();
 
     // Trigger explicit notification permission request via the service
@@ -411,18 +412,57 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
   Future<void> _fetchDashboardData() async {
     final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
     final userId = userProvider.currentUserNode?.id ?? 'unknown';
+    final prefs = await SharedPreferences.getInstance();
+
+    // 1. Load cached data to display instantly
+    final cachedStats = prefs.getDouble('cached_stats_$userId');
+    final cachedTasksStr = prefs.getString('cached_tasks_$userId');
+    final cachedSummaryStr = prefs.getString('cached_summary_$userId');
+
+    if (cachedStats != null || cachedTasksStr != null || cachedSummaryStr != null) {
+      if (mounted) {
+        setState(() {
+          if (cachedStats != null) _attendancePercentage = cachedStats;
+          if (cachedTasksStr != null) {
+            try {
+              final List<dynamic> decodedTasks = jsonDecode(cachedTasksStr);
+              _processUpcomingTasks(decodedTasks.cast<Map<String, dynamic>>());
+            } catch (_) {}
+          }
+          if (cachedSummaryStr != null) {
+            try {
+              final List<dynamic> decodedSummary = jsonDecode(cachedSummaryStr);
+              _summaryData = decodedSummary.cast<Map<String, dynamic>>();
+            } catch (_) {}
+          }
+          _isLoading = false;
+        });
+      }
+    }
 
     try {
       print('Dashboard: Fetching data for user $userId');
-      final percentage = await _apiService.fetchDashboardStats(userId);
-      final tasks = await _apiService.fetchUserTimetable(userId);
-      final summary = await _apiService.fetchAttendanceSummary(userId);
+      // Fetch concurrently using Future.wait for maximum speed
+      final results = await Future.wait([
+        _apiService.fetchDashboardStats(userId),
+        _apiService.fetchUserTimetable(userId),
+        _apiService.fetchAttendanceSummary(userId),
+      ]).timeout(const Duration(seconds: 15));
+
+      final percentage = results[0] as double;
+      final tasks = List<Map<String, dynamic>>.from(results[1] as List);
+      final summary = List<Map<String, dynamic>>.from(results[2] as List);
       print('Dashboard: Received ${tasks.length} tasks');
+
+      // Cache the fresh data
+      await prefs.setDouble('cached_stats_$userId', percentage);
+      await prefs.setString('cached_tasks_$userId', jsonEncode(tasks));
+      await prefs.setString('cached_summary_$userId', jsonEncode(summary));
 
       if (mounted) {
         setState(() {
           _attendancePercentage = percentage;
-          _summaryData = List<Map<String, dynamic>>.from(summary);
+          _summaryData = summary;
           _processUpcomingTasks(tasks);
           _isLoading = false;
         });
@@ -442,6 +482,7 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
         }
       }
     } catch (e) {
+      print('Dashboard: Error fetching online data: $e');
       if (mounted) {
         setState(() {
           _isLoading = false;

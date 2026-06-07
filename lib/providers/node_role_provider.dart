@@ -4,7 +4,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_node.dart';
 import '../services/api_service.dart';
 import '../services/session_automation_service.dart';
+import '../services/foreground_task_handler.dart';
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 class NodeRoleProvider with ChangeNotifier {
   final ApiService _apiService = ApiService();
@@ -73,7 +75,7 @@ class NodeRoleProvider with ChangeNotifier {
       // Cancel existing normal alarms
       await automation.cancelAllSessions();
 
-      // Schedule exact test alarms
+      // Schedule exact test alarms (as safety fallbacks)
       print('Automation: Scheduling test start alarm at $t1Start');
       await AndroidAlarmManager.oneShotAt(
         t1Start,
@@ -93,6 +95,40 @@ class NodeRoleProvider with ChangeNotifier {
         wakeup: true,
         rescheduleOnReboot: true,
       );
+
+      // Start the foreground service immediately in the waiting stage
+      print('Automation: Initializing foreground service for Test mode immediately');
+      FlutterForegroundTask.init(
+        androidNotificationOptions: AndroidNotificationOptions(
+          channelId: 'ble_session_service',
+          channelName: 'BLE Attendance Session',
+          channelDescription: 'Running BLE scanning and advertising for attendance tracking.',
+          onlyAlertOnce: true,
+        ),
+        iosNotificationOptions: const IOSNotificationOptions(
+          showNotification: false,
+          playSound: false,
+        ),
+        foregroundTaskOptions: ForegroundTaskOptions(
+          eventAction: ForegroundTaskEventAction.repeat(10000), // Update every 10s
+          autoRunOnBoot: true,
+          autoRunOnMyPackageReplaced: true,
+          allowWakeLock: true,
+          allowWifiLock: true,
+          stopWithTask: false,
+        ),
+      );
+
+      final startResult = await FlutterForegroundTask.startService(
+        serviceId: 300,
+        notificationTitle: 'Waiting: Test Activity',
+        notificationText: 'Starting in 60s...',
+        notificationIcon: const NotificationIcon(
+          metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON',
+        ),
+        callback: startForegroundCallback,
+      );
+      print('Automation: Immediate Test Service Start Result: $startResult');
           
     } else {
       await automation.cancelAllSessions();
@@ -159,10 +195,27 @@ class NodeRoleProvider with ChangeNotifier {
   }
 
   Future<void> refreshPermissions() async {
-    _allowedUploadRoles = await _apiService.fetchAllowedUploadRoles();
     final prefs = await SharedPreferences.getInstance();
+    
+    // 1. Try to load cached roles first to avoid blocking the main isolate on start
+    final cachedRoles = prefs.getStringList('cached_allowed_upload_roles');
+    if (cachedRoles != null) {
+      _allowedUploadRoles = cachedRoles;
+      notifyListeners();
+    }
+
+    // 2. Fetch fresh roles in the background without blocking the UI
+    _apiService.fetchAllowedUploadRoles().then((roles) async {
+      _allowedUploadRoles = roles;
+      final p = await SharedPreferences.getInstance();
+      await p.setStringList('cached_allowed_upload_roles', roles);
+      await p.setBool('is_root_user', _realCanUpload);
+      notifyListeners();
+    }).catchError((e) {
+      print('Error fetching allowed upload roles in background: $e');
+    });
+
     await prefs.setBool('is_root_user', _realCanUpload);
-    notifyListeners();
   }
 
   Future<void> fetchUserRole(String uid) async {

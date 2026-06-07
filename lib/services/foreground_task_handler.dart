@@ -6,6 +6,7 @@ import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 import 'ble_mesh_service.dart';
 import 'api_service.dart';
 import 'session_automation_service.dart';
+import 'notification_service.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 /// Top-level callback that the foreground service calls to set the handler.
@@ -23,6 +24,8 @@ class BleSessionTaskHandler extends TaskHandler {
   Timer? _uploadTimer;
   Timer? _verifyTimer;
   Timer? _endTimer;
+  Timer? _startMeshTimer;
+  bool _isMeshStarted = false;
   String _currentActivityName = 'Session';
 
   @override
@@ -46,22 +49,69 @@ class BleSessionTaskHandler extends TaskHandler {
     final activityName = data['activity_name'] ?? 'Session';
     final role = data['is_root'] == true ? 'root' : 'leaf';
     final isTest = data['is_test'] == true;
-
-    print('FG_SERVICE: Starting BLE mesh for $activityName (task: $taskId, user: $userId, role: $role)');
-
-    // Start BLE Mesh (this now works because we're in a foreground service!)
-    await _bleService.initializeMeshNode(
-      role, taskId, userId, activityName,
-      isTest: isTest,
-      startTimeStr: data['start_time'],
-    );
-
-    // Mark as active
-    data['status'] = 'active';
-    await prefs.setString(alarmKey, jsonEncode(data));
-
-    // Calculate phase timers
+    final startTime = DateTime.parse(data['start_time']);
     final endTime = DateTime.parse(data['end_time']);
+    final now = DateTime.now();
+
+    _currentActivityName = activityName;
+    _isMeshStarted = false;
+
+    if (now.isBefore(startTime)) {
+      final waitDuration = startTime.difference(now);
+      print('FG_SERVICE: Waiting ${waitDuration.inSeconds}s before starting BLE mesh...');
+
+      FlutterForegroundTask.updateService(
+        notificationTitle: 'Waiting: $activityName',
+        notificationText: 'Starting in ${waitDuration.inSeconds}s...',
+        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
+      );
+
+      _startMeshTimer = Timer(waitDuration, () async {
+        print('FG_SERVICE: Wait duration over. Starting BLE mesh now!');
+        _isMeshStarted = true;
+        await _bleService.initializeMeshNode(
+          role, taskId, userId, activityName,
+          isTest: isTest,
+          startTimeStr: data['start_time'],
+        );
+
+        // Mark alarm status as active in preferences
+        try {
+          final p = await SharedPreferences.getInstance();
+          await p.reload();
+          final alarmStr = p.getString(alarmKey);
+          if (alarmStr != null) {
+            final Map<String, dynamic> currentData = jsonDecode(alarmStr);
+            currentData['status'] = 'active';
+            await p.setString(alarmKey, jsonEncode(currentData));
+          }
+        } catch (e) {
+          print('FG_SERVICE: Error updating status to active: $e');
+        }
+
+        // Show start notification
+        // Note: NotificationService assumed available in scope or needs import
+        
+        _scheduleTimers(endTime, isTest);
+      });
+    } else {
+      // Start immediately
+      _isMeshStarted = true;
+      await _bleService.initializeMeshNode(
+        role, taskId, userId, activityName,
+        isTest: isTest,
+        startTimeStr: data['start_time'],
+      );
+
+      // Mark alarm status as active
+      data['status'] = 'active';
+      await prefs.setString(alarmKey, jsonEncode(data));
+
+      _scheduleTimers(endTime, isTest);
+    }
+  }
+
+  void _scheduleTimers(DateTime endTime, bool isTest) {
     final now = DateTime.now();
 
     // Schedule upload (2 min before end)
@@ -88,24 +138,26 @@ class BleSessionTaskHandler extends TaskHandler {
     final endDelay = endTime.difference(now);
     if (endDelay.isNegative) {
       print('FG_SERVICE: End time is in the past. Stopping immediately.');
-      await _onEnd();
+      _onEnd();
     } else {
       print('FG_SERVICE: End scheduled in ${endDelay.inSeconds}s');
       _endTimer = Timer(endDelay, _onEnd);
     }
 
-    // Update notification
-    _currentActivityName = activityName;
+    _updateNotificationWithEnd(endTime);
+  }
+
+  Future<void> _updateNotificationWithEnd(DateTime endTime) async {
     final btState = await FlutterBluePlus.adapterState.first;
     if (btState != BluetoothAdapterState.on) {
       FlutterForegroundTask.updateService(
         notificationTitle: '⚠️ Bluetooth is OFF',
-        notificationText: 'Turn ON Bluetooth to track attendance for $activityName',
+        notificationText: 'Turn ON Bluetooth to track attendance for $_currentActivityName',
         notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
       );
     } else {
       FlutterForegroundTask.updateService(
-        notificationTitle: 'Tracking: $activityName',
+        notificationTitle: 'Tracking: $_currentActivityName',
         notificationText: 'BLE mesh active • Session ends at ${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}',
         notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
       );
@@ -113,7 +165,29 @@ class BleSessionTaskHandler extends TaskHandler {
   }
 
   @override
-  void onRepeatEvent(DateTime timestamp) {
+  void onRepeatEvent(DateTime timestamp) async {
+    if (!_isMeshStarted) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final isTestMode = prefs.getBool('is_test_mode') ?? false;
+      final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+      final alarmData = prefs.getString(alarmKey);
+      if (alarmData != null) {
+        final data = jsonDecode(alarmData);
+        final startTime = DateTime.parse(data['start_time']);
+        final now = DateTime.now();
+        final waitSecs = startTime.difference(now).inSeconds;
+        if (waitSecs > 0) {
+          FlutterForegroundTask.updateService(
+            notificationTitle: 'Waiting: $_currentActivityName',
+            notificationText: 'Starting in ${waitSecs}s...',
+            notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
+          );
+          return;
+        }
+      }
+    }
+
     if (_bleService.isBtAlertShown) {
       FlutterForegroundTask.updateService(
         notificationTitle: '⚠️ Bluetooth is OFF',
@@ -211,10 +285,7 @@ class BleSessionTaskHandler extends TaskHandler {
         }
         
         // Save next alarm data for the alarm manager to pick up
-        // The main app's SessionAutomationService will handle this
-        // We just need to store the data
         if (tasks.isNotEmpty) {
-          // Import and use the scheduling logic
           final SessionScheduler scheduler = SessionScheduler();
           await scheduler.scheduleNextFromForeground(tasks, userId, isRoot);
         } else {
@@ -229,19 +300,60 @@ class BleSessionTaskHandler extends TaskHandler {
     FlutterForegroundTask.stopService();
   }
 
+  Future<void> _onSkip() async {
+    print('FG_SERVICE: _onSkip triggered');
+    _startMeshTimer?.cancel();
+    
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    final isTestMode = prefs.getBool('is_test_mode') ?? false;
+    final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+    final alarmData = prefs.getString(alarmKey);
+    if (alarmData == null) return;
+
+    final data = jsonDecode(alarmData);
+    final taskId = data['task_id'].toString();
+    final userId = data['user_id'].toString();
+    final activityName = data['activity_name'] ?? 'Session';
+    final role = data['is_root'] == true ? 'root' : 'leaf';
+
+    _isMeshStarted = true;
+
+    // Start BLE Mesh immediately
+    await _bleService.initializeMeshNode(
+      role, taskId, userId, activityName,
+      isTest: isTestMode,
+      startTimeStr: data['start_time'],
+    );
+
+    // Cancel old timers
+    _uploadTimer?.cancel();
+    _verifyTimer?.cancel();
+    _endTimer?.cancel();
+
+    // Re-schedule timers based on new end time
+    final endTime = DateTime.parse(data['end_time']);
+    _scheduleTimers(endTime, isTestMode);
+  }
+
   @override
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
     print('FG_SERVICE: onDestroy(isTimeout: $isTimeout) at $timestamp');
     _uploadTimer?.cancel();
     _verifyTimer?.cancel();
     _endTimer?.cancel();
+    _startMeshTimer?.cancel();
   }
 
   @override
   void onReceiveData(Object data) {
     print('FG_SERVICE: onReceiveData: $data');
-    if (data is String && data == 'stop') {
-      _onEnd();
+    if (data is String) {
+      if (data == 'stop') {
+        _onEnd();
+      } else if (data == 'skip') {
+        _onSkip();
+      }
     }
   }
 
@@ -266,7 +378,7 @@ class BleSessionTaskHandler extends TaskHandler {
 /// This avoids importing the full SessionAutomationService (which depends on AlarmManager).
 class SessionScheduler {
   Future<void> scheduleNextFromForeground(
-    List<Map<String, dynamic>> tasks, String userId, bool isRoot) async {
+      List<Map<String, dynamic>> tasks, String userId, bool isRoot) async {
     final prefs = await SharedPreferences.getInstance();
     
     if (prefs.containsKey('session_alarm')) return; // Already scheduled
