@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Native Android splash shown while the Flutter engine initializes.
+     Uses the same dark background as the Flutter StartupScreen so the
+     transition is seamless instead of showing a blank black screen. -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <item android:drawable="@android:color/black"/>
+    <!-- Dark navy background matching the Flutter startup screen -->
+    <item android:drawable="@color/splash_background" />
+
+    <!-- Centered app icon (same icon used for the launcher) -->
+    <item>
+        <bitmap
+            android:gravity="center"
+            android:src="@mipmap/ic_launcher_round"
+            android:tileMode="disabled" />
+    </item>
 
 </layer-list>

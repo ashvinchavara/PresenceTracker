@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- App icon background: deep navy matching the app's primary color -->
-    <color name="ic_launcher_background">#FFF</color>
+    <!-- App icon background: white circle on dark theme -->
+    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- Native splash screen background — matches the Flutter StartupScreen dark bg -->
+    <color name="splash_background">#0A0E1A</color>
 </resources>
