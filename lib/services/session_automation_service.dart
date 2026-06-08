@@ -4,6 +4,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'foreground_task_handler.dart';
 import 'notification_service.dart';
+import 'api_service.dart';
 
 import 'package:flutter/widgets.dart';
 import 'dart:developer' as developer;
@@ -68,6 +69,10 @@ void onSessionStart() async {
     ),
   );
 
+  // Open the communication port so the foreground service can send/receive data
+  // even when launched from a background alarm isolate (no Flutter UI running)
+  FlutterForegroundTask.initCommunicationPort();
+
   // Start the foreground service
   final result = await FlutterForegroundTask.startService(
     serviceId: 300,
@@ -83,7 +88,7 @@ void onSessionStart() async {
 }
 
 /// Called by AndroidAlarmManager when the session should END.
-/// Stops the foreground service cleanly.
+/// Stops the foreground service cleanly AND schedules the next session.
 @pragma('vm:entry-point')
 void onSessionEnd() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -93,6 +98,14 @@ void onSessionEnd() async {
   await prefs.reload();
   final isTestMode = prefs.getBool('is_test_mode') ?? false;
   final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+  final alarmData = prefs.getString(alarmKey); // read BEFORE removing
+
+  // Signal the running foreground service to stop cleanly
+  FlutterForegroundTask.sendDataToTask('stop');
+  await Future.delayed(const Duration(milliseconds: 500));
+
+  // Force-stop the service as safety net
+  await FlutterForegroundTask.stopService();
 
   // Clean up states in preferences
   await prefs.remove(alarmKey);
@@ -105,23 +118,44 @@ void onSessionEnd() async {
     await prefs.setBool('is_test_mode', false);
   }
 
-  // Send stop command to the foreground service
-  FlutterForegroundTask.sendDataToTask('stop');
-  
-  // Stop the service
-  await FlutterForegroundTask.stopService();
-
-  // Clear any active session/alert notifications and notify user that it has completed
+  // Clear any active session/alert notifications and notify user
   final notifications = NotificationService();
   await notifications.init();
   await notifications.cancel(100); // BT Alert ID
-  await notifications.cancel(101); // Ongoing Session Notification ID
+  await notifications.cancel(101); // Ongoing Session ID
+  await notifications.cancel(104); // BLE Error ID
   await notifications.showAlert(
     isTestMode ? 'Test Session Ended' : 'Session Ended',
     'Attendance tracking has completed.',
   );
 
-  print('BACKGROUND LOG: Foreground service stopped and state cleaned up.');
+  // CHAIN: Schedule next session from the end alarm handler
+  // This is the belt-and-suspenders path in case the foreground handler
+  // was killed before its own _endTimer could fire.
+  if (alarmData != null) {
+    try {
+      final data = jsonDecode(alarmData);
+      final userId = data['user_id'].toString();
+      final isRoot = isTestMode 
+          ? (prefs.getBool('is_root_user') ?? false) 
+          : (data['is_root'] == true);
+
+      print('BACKGROUND LOG: Scheduling next session after alarm end...');
+      final api = ApiService();
+      List<Map<String, dynamic>> tasks = await api.getCachedUserTimetableOffline();
+      if (tasks.isEmpty) {
+        tasks = await api.fetchUserTimetable(userId);
+      }
+      if (tasks.isNotEmpty) {
+        final scheduler = SessionScheduler();
+        await scheduler.scheduleNextFromForeground(tasks, userId, isRoot);
+      }
+    } catch (e) {
+      print('BACKGROUND LOG: Failed to schedule next session from onSessionEnd: $e');
+    }
+  }
+
+  print('BACKGROUND LOG: onSessionEnd complete.');
 }
 
 class SessionAutomationService {
@@ -153,6 +187,7 @@ class SessionAutomationService {
       await FlutterForegroundTask.stopService();
     }
   }
+
 
   Future<void> scheduleNextSessionIfNeeded(List<Map<String, dynamic>> tasks, String userId, bool isRoot) async {
     final prefs = await SharedPreferences.getInstance();

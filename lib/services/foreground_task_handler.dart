@@ -86,7 +86,6 @@ class BleSessionTaskHandler extends TaskHandler {
             notificationText: 'Turn ON Bluetooth — $_currentActivityName starts soon',
             notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
           );
-          // Fire high-importance local notification so it pops up even in background
           await NotificationService().showBluetoothAlert();
         }
       });
@@ -96,11 +95,27 @@ class BleSessionTaskHandler extends TaskHandler {
         _countdownTimer?.cancel();
         _btWatchdogTimer?.cancel();
         _isMeshStarted = true;
+
+        // Wire up absent callback before initializing mesh
+        _bleService.onAbsentMarked = () {
+          print('FG_SERVICE: onAbsentMarked triggered — ending session early.');
+          _onEnd();
+        };
+
         await _bleService.initializeMeshNode(
           role, taskId, userId, activityName,
           isTest: isTest,
           startTimeStr: data['start_time'],
         );
+
+        // If BLE failed for a non-BT reason, update the foreground notification
+        if (_bleService.bleError != null) {
+          FlutterForegroundTask.updateService(
+            notificationTitle: '❌ BLE Error: $_currentActivityName',
+            notificationText: _bleService.bleError!,
+            notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
+          );
+        }
 
         // Mark alarm status as active in preferences
         try {
@@ -121,11 +136,27 @@ class BleSessionTaskHandler extends TaskHandler {
     } else {
       // Start immediately
       _isMeshStarted = true;
+
+      // Wire up absent callback before initializing mesh
+      _bleService.onAbsentMarked = () {
+        print('FG_SERVICE: onAbsentMarked triggered — ending session early.');
+        _onEnd();
+      };
+
       await _bleService.initializeMeshNode(
         role, taskId, userId, activityName,
         isTest: isTest,
         startTimeStr: data['start_time'],
       );
+
+      // If BLE failed for a non-BT reason, update the foreground notification
+      if (_bleService.bleError != null) {
+        FlutterForegroundTask.updateService(
+          notificationTitle: '❌ BLE Error: $_currentActivityName',
+          notificationText: _bleService.bleError!,
+          notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
+        );
+      }
 
       // Mark alarm status as active
       data['status'] = 'active';
@@ -259,16 +290,31 @@ class BleSessionTaskHandler extends TaskHandler {
 
   Future<void> _onEnd() async {
     print('FG_SERVICE: Session end triggered at ${DateTime.now()}');
+
+    // Cancel all internal timers
+    _uploadTimer?.cancel();
+    _verifyTimer?.cancel();
+    _endTimer?.cancel();
+    _countdownTimer?.cancel();
+    _btWatchdogTimer?.cancel();
+
+    // 1. Stop BLE mesh — best-effort, non-fatal
     try {
       await _bleService.endMeshTask();
+    } catch (e) {
+      print('FG_SERVICE: endMeshTask error (non-fatal): $e');
+    }
 
+    // 2. Clean up prefs and chain next session — ALWAYS runs regardless of step 1
+    try {
       final prefs = await SharedPreferences.getInstance();
       final isTestMode = prefs.getBool('is_test_mode') ?? false;
       final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
       final alarmData = prefs.getString(alarmKey);
-      
+
       // Clear current alarm
       await prefs.remove(alarmKey);
+      await prefs.setBool('is_mesh_active', false);
       if (isTestMode) {
         await prefs.remove('test_mode_tasks');
         await prefs.remove('test_start_time');
@@ -281,16 +327,15 @@ class BleSessionTaskHandler extends TaskHandler {
         final data = jsonDecode(alarmData);
         final userId = data['user_id'].toString();
         final isRoot = isTestMode ? (prefs.getBool('is_root_user') ?? false) : (data['is_root'] == true);
-        
-        print('FG_SERVICE: Session ended. Scheduling next...');
+
+        print('FG_SERVICE: Session ended. Scheduling next activity...');
         final api = ApiService();
         List<Map<String, dynamic>> tasks = await api.getCachedUserTimetableOffline();
         if (tasks.isEmpty) {
           print('FG_SERVICE: Offline cache empty, fetching from API...');
           tasks = await api.fetchUserTimetable(userId);
         }
-        
-        // Save next alarm data for the alarm manager to pick up
+
         if (tasks.isNotEmpty) {
           final SessionScheduler scheduler = SessionScheduler();
           await scheduler.scheduleNextFromForeground(tasks, userId, isRoot);
@@ -299,10 +344,10 @@ class BleSessionTaskHandler extends TaskHandler {
         }
       }
     } catch (e) {
-      print('FG_SERVICE: End error: $e');
+      print('FG_SERVICE: End cleanup/scheduling error: $e');
     }
 
-    // Stop the foreground service
+    // 3. Always stop the foreground service
     FlutterForegroundTask.stopService();
   }
 
@@ -391,8 +436,9 @@ class SessionScheduler {
       List<Map<String, dynamic>> tasks, String userId, bool isRoot) async {
     final prefs = await SharedPreferences.getInstance();
     
-    if (prefs.containsKey('session_alarm')) return; // Already scheduled
+    // No early-return guard here — caller has already cleared 'session_alarm' before calling us.
     if (tasks.isEmpty) return;
+
 
     final now = DateTime.now();
     final dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];

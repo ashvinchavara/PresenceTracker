@@ -34,6 +34,18 @@ class BleMeshService {
   bool _isMeshRunning = false;
   bool _isBtAlertShown = false;
   bool get isBtAlertShown => _isBtAlertShown;
+
+  // BLE active state — only true after scan + advertise both succeed
+  bool _isBleActive = false;
+  bool get isBleActive => _isBleActive;
+
+  // Non-null when BLE failed for a non-BT reason (permissions, hardware, etc.)
+  String? _bleError;
+  String? get bleError => _bleError;
+
+  /// Callback fired when a user is manually marked as absent.
+  /// The foreground handler sets this to trigger session end.
+  Function()? onAbsentMarked;
   
   // Phase management
   bool _isAdvertisingMesh = false;
@@ -58,23 +70,82 @@ class BleMeshService {
       _activityStartEpoch = _activityStartEpoch ~/ 1000;
       _peers.clear();
       _isMeshRunning = true;
+      _isBleActive = false;
+      _bleError = null;
 
       await _notifications.init();
-      print('BleMeshService: Notifications initialized successfully');
-      
-      _startBluetoothWatchdog();
-      _startScanning();
-      _startAdvertisingCycle();
-      _updateOngoingNotification();
-      
+      print('BleMeshService: Notifications initialized');
+
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('is_mesh_active', true);
       await prefs.setString('mesh_task_id', taskId);
-      
-      print('BLE Mesh Initialized successfully for $activityName');
+
+      // Always start the BT state listener (handles BT on/off reactively)
+      _startScanningWithStateListener(role, taskId, userId, activityName, isTest, startTimeStr);
+
+      // Check current BT state
+      final btState = await FlutterBluePlus.adapterState.first;
+      if (btState != BluetoothAdapterState.on) {
+        print('BleMeshService: BT is OFF at init. Showing alert, waiting for BT to turn on...');
+        _isBtAlertShown = true;
+        _updateForegroundServiceNotification(true);
+        await _notifications.showBluetoothAlert();
+        // BT watchdog will keep alerting every 10s; BT state listener will start BLE when BT turns on
+        _startBluetoothWatchdog();
+        return; // Do NOT start scan/advertise yet
+      }
+
+      // BT is on — try to start BLE
+      await _initBleWithErrorHandling(role, taskId, activityName, isTest);
+      print('BLE Mesh Initialized for $activityName. BLE active: $_isBleActive');
     } catch (e, stack) {
       print('BACKGROUND EXCEPTION in BleMeshService.initializeMeshNode: $e');
       print(stack);
+    }
+  }
+
+  /// Tries to start scan and advertise. Sets _isBleActive=true only on full success.
+  /// Shows BLE error notification if either fails for a non-BT reason.
+  Future<void> _initBleWithErrorHandling(String role, String taskId, String activityName, bool isTest) async {
+    bool scanOk = false;
+    bool advOk = false;
+
+    // Start scanning
+    try {
+      if (!FlutterBluePlus.isScanningNow) {
+        await FlutterBluePlus.startScan(timeout: const Duration(days: 1), continuousUpdates: true);
+        FlutterBluePlus.scanResults.listen((results) {
+          for (ScanResult r in results) {
+            _processScanResult(r);
+          }
+        });
+      }
+      scanOk = true;
+      print('BleMeshService: BLE scan started successfully.');
+    } catch (e, stack) {
+      _bleError = 'Scan failed: ${e.toString().split('\n').first}';
+      print('BleMeshService: Start Scan Error: $e\n$stack');
+      await _notifications.showBleError(_bleError!, _currentActivityName);
+    }
+
+    // Start advertising cycle
+    try {
+      _startAdvertisingCycle();
+      advOk = true;
+      print('BleMeshService: BLE advertise cycle started successfully.');
+    } catch (e, stack) {
+      final advErr = 'Advertise failed: ${e.toString().split('\n').first}';
+      if (_bleError == null) _bleError = advErr;
+      print('BleMeshService: Advertise Error: $e\n$stack');
+      await _notifications.showBleError(_bleError!, _currentActivityName);
+    }
+
+    if (scanOk && advOk) {
+      _isBleActive = true;
+      _isBtAlertShown = false;
+      _startBluetoothWatchdog();
+      // Only show the ongoing peer-count notification once BLE is confirmed active
+      _updateOngoingNotification();
     }
   }
 
@@ -117,6 +188,7 @@ class BleMeshService {
   }
 
   void _updateOngoingNotification() {
+    if (!_isBleActive) return; // Only show once BLE is confirmed active
     if (_isBtAlertShown) {
       _updateForegroundServiceNotification(true);
     } else {
@@ -124,12 +196,12 @@ class BleMeshService {
     }
   }
 
-  void _startScanning() async {
+  /// BT state listener that reactively starts/stops BLE as BT turns on/off.
+  void _startScanningWithStateListener(String role, String taskId, String userId, String activityName, bool isTest, String? startTimeStr) {
     try {
-      print('BleMeshService: _startScanning called');
       _btStateSub?.cancel();
       _btStateSub = FlutterBluePlus.adapterState.listen((state) async {
-        print('BleMeshService: Bluetooth state is: $state');
+        print('BleMeshService: Bluetooth state changed: $state');
         if (state == BluetoothAdapterState.on) {
           if (_isBtAlertShown) {
             _isBtAlertShown = false;
@@ -137,35 +209,23 @@ class BleMeshService {
             await _notifications.cancel(100);
             FlutterForegroundTask.sendDataToMain('bt_alert_clear');
           }
-          if (!FlutterBluePlus.isScanningNow) {
-            print('BleMeshService: Bluetooth ON. Starting Scan...');
-            try {
-              await FlutterBluePlus.startScan(timeout: const Duration(days: 1), continuousUpdates: true);
-              FlutterBluePlus.scanResults.listen((results) {
-                for (ScanResult r in results) {
-                  _processScanResult(r);
-                }
-              });
-            } catch (e, stack) {
-              print('BleMeshService: Start Scan Error: $e');
-              print(stack);
-            }
-          } else {
-            print('BleMeshService: Already scanning, no need to startScan');
+          // If BLE not yet started (was off at init), try now
+          if (!_isBleActive && _isMeshRunning) {
+            print('BleMeshService: BT turned ON. Initializing BLE...');
+            await _initBleWithErrorHandling(role, taskId, activityName, isTest);
           }
         } else if (state == BluetoothAdapterState.off) {
-          print('BleMeshService: Bluetooth OFF. Stopping Scan...');
+          print('BleMeshService: Bluetooth OFF. Pausing BLE...');
           _isBtAlertShown = true;
+          _isBleActive = false;
           _updateForegroundServiceNotification(true);
           await _notifications.showBluetoothAlert();
           FlutterForegroundTask.sendDataToMain('bt_alert');
-          try {
-            await FlutterBluePlus.stopScan();
-          } catch (e) {}
+          try { await FlutterBluePlus.stopScan(); } catch (e) {}
         }
       });
     } catch (e, stack) {
-      print('BACKGROUND EXCEPTION in BleMeshService._startScanning: $e');
+      print('BACKGROUND EXCEPTION in BleMeshService._startScanningWithStateListener: $e');
       print(stack);
     }
   }
@@ -348,23 +408,30 @@ class BleMeshService {
 
   Future<void> endMeshTask() async {
     _isMeshRunning = false;
+    _isBleActive = false;
     _meshCycleTimer?.cancel();
     _notificationTimer?.cancel();
     _btWatchdog?.cancel();
     _btStateSub?.cancel();
     
-    await FlutterBluePlus.stopScan();
-    await _blePeripheral.stop();
+    try { await FlutterBluePlus.stopScan(); } catch (_) {}
+    try { await _blePeripheral.stop(); } catch (_) {}
     
     if (_isBtAlertShown) {
       _isBtAlertShown = false;
       FlutterForegroundTask.sendDataToMain('bt_alert_clear');
     }
+
+    // Cancel all alert/error notifications
+    await _notifications.cancel(100); // BT alert
+    await _notifications.cancel(101); // Ongoing session
+    await _notifications.cancelBleError(); // BLE error (104)
     
     await verifyAttendance();
     
     _peers.clear();
     _tempUploadPower = false;
+    _bleError = null;
     
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('is_mesh_active', false);
@@ -449,6 +516,9 @@ class BleMeshService {
        };
     } else {
        _peers.remove(userId);
+       // Marking a user absent — notify the session handler to stop and chain next session
+       print('BleMeshService: User $userId marked absent. Triggering session end.');
+       onAbsentMarked?.call();
     }
   }
 }
