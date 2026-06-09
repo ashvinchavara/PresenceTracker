@@ -48,6 +48,7 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
   String _meshTaskId = '';
   Map<String, Map<String, int>> _rootAggregatedData = {};
   Map<String, dynamic>? _currentAlarm;
+  List<String> _leaveTaskIds = [];
   Timer? _uiSyncTimer;
   StreamSubscription<BluetoothAdapterState>? _btStateSubscription;
   Timer? _btMonitoringTimer;
@@ -310,12 +311,15 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
     Map<String, dynamic>? alarm = await _automationService.getActiveAlarm();
     print('Dashboard: Loaded alarm: $alarm');
     
+    final leaveIds = prefs.getStringList('leave_task_ids') ?? [];
+    
     if (mounted) {
       setState(() {
         _isMeshActive = active;
         _meshTaskId = tId;
         _rootAggregatedData = aggData;
         _currentAlarm = alarm;
+        _leaveTaskIds = leaveIds;
       });
       
       if (!active) {
@@ -758,10 +762,50 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(task['activity_name'] ?? 'Task Details', 
-                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-              Text("${task['time_range']} • ${task['target_node_name']}", 
-                style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 16)),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(task['activity_name'] ?? 'Task Details', 
+                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                        Text("${task['time_range']} • ${task['target_node_name']}", 
+                          style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 16)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Builder(
+                    builder: (context) {
+                      final bool isLeave = _leaveTaskIds.contains(task['id'].toString());
+                      
+                      if (isLeave) {
+                        return ElevatedButton.icon(
+                          onPressed: () => _restartTask(task),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                          ),
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('Restart'),
+                        );
+                      } else {
+                        return OutlinedButton.icon(
+                          onPressed: () => _markTaskAsLeave(task),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Colors.red),
+                            foregroundColor: Colors.red,
+                          ),
+                          icon: const Icon(Icons.cancel),
+                          label: const Text('Leave'),
+                        );
+                      }
+                    },
+                  ),
+                ],
+              ),
               const Divider(height: 30),
               const Text("Assigned Personnel", 
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
@@ -897,6 +941,155 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
         ),
       ),
     );
+  }
+
+  void _markTaskAsLeave(Map<String, dynamic> task) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    
+    final leaveIds = prefs.getStringList('leave_task_ids') ?? [];
+    final taskIdStr = task['id'].toString();
+    if (!leaveIds.contains(taskIdStr)) {
+      leaveIds.add(taskIdStr);
+      await prefs.setStringList('leave_task_ids', leaveIds);
+    }
+    
+    // Save as last leave task for notification restart callbacks
+    await prefs.setString('last_leave_task', jsonEncode(task));
+    
+    // Check if the marked task is the active one
+    final bool isTargeted = _currentAlarm != null && _currentAlarm!['task_id'].toString() == taskIdStr;
+    final bool isActive = isTargeted && _currentAlarm!['status'] == 'active';
+    
+    if (isActive) {
+      try {
+        await FlutterForegroundTask.stopService();
+      } catch (e) {
+        print('Dashboard: Error stopping service: $e');
+      }
+    }
+    
+    // Remove the scheduled alarm key from prefs if it was this task
+    if (isTargeted) {
+      final isTestMode = prefs.getBool('is_test_mode') ?? false;
+      final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+      await prefs.remove(alarmKey);
+    }
+    
+    // Reschedule so the scheduler finds the next non-leave task
+    final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
+    final userId = userProvider.currentUserNode?.id ?? '';
+    final isRoot = userProvider.currentUserNode?.canUpload == true;
+    final isTestMode = prefs.getBool('is_test_mode') ?? false;
+    
+    List<Map<String, dynamic>> tasks;
+    if (isTestMode) {
+      tasks = _upcomingTasks;
+    } else {
+      tasks = await _apiService.getCachedUserTimetableOffline();
+      if (tasks.isEmpty) {
+        tasks = await _apiService.fetchUserTimetable(userId);
+      }
+    }
+    await _automationService.scheduleNextSessionIfNeeded(tasks, userId, isRoot);
+    
+    // Synchronize UI
+    await _loadMeshState();
+    
+    final notif = NotificationService();
+    await notif.init();
+    await notif.cancel(100);
+    await notif.cancel(101);
+    await notif.showAbsentSession(task['activity_name'] ?? 'Session');
+    
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("${task['activity_name'] ?? 'Session'} marked as Leave.")),
+    );
+    Navigator.pop(context);
+  }
+
+  void _restartTask(Map<String, dynamic> task) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    
+    final leaveIds = prefs.getStringList('leave_task_ids') ?? [];
+    final taskIdStr = task['id'].toString();
+    leaveIds.remove(taskIdStr);
+    await prefs.setStringList('leave_task_ids', leaveIds);
+    
+    // Cancel Leave notification if showing
+    final notif = NotificationService();
+    await notif.init();
+    await notif.cancel(105);
+    
+    // Parse start and end times to decide whether to start immediately or schedule
+    final now = DateTime.now();
+    DateTime startTime;
+    DateTime endTime;
+    
+    if (task['is_test'] == true || prefs.getBool('is_test_mode') == true) {
+      startTime = DateTime.tryParse(task['start_time'] ?? '') ?? now;
+      endTime = DateTime.tryParse(task['end_time'] ?? '') ?? now.add(const Duration(minutes: 5));
+    } else {
+      final timeRange = task['time_range'] as String;
+      final parts = timeRange.split(' - ');
+      startTime = SessionAutomationService.parseTime(parts[0], now);
+      endTime = SessionAutomationService.parseTime(parts[1], now);
+    }
+    
+    final bool isUpcoming = now.isBefore(startTime);
+    final bool isOngoing = now.isAfter(startTime) && now.isBefore(endTime);
+    
+    final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
+    final userId = userProvider.currentUserNode?.id ?? '';
+    final isRoot = userProvider.currentUserNode?.canUpload == true;
+    final isTestMode = prefs.getBool('is_test_mode') ?? false;
+    final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+    
+    if (isOngoing) {
+      final alarmData = {
+        'task_id': task['id'],
+        'user_id': userId,
+        'activity_name': task['activity_name'],
+        'start_time': startTime.toIso8601String(),
+        'end_time': endTime.toIso8601String(),
+        'is_root': isRoot,
+        'is_test': task['is_test'] == true,
+        'status': 'active',
+      };
+      await prefs.setString(alarmKey, jsonEncode(alarmData));
+      onSessionStart();
+      
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Started tracking for ${task['activity_name'] ?? 'Session'}.")),
+      );
+    } else if (isUpcoming) {
+      List<Map<String, dynamic>> tasks;
+      if (isTestMode) {
+        tasks = _upcomingTasks;
+      } else {
+        tasks = await _apiService.getCachedUserTimetableOffline();
+        if (tasks.isEmpty) {
+          tasks = await _apiService.fetchUserTimetable(userId);
+        }
+      }
+      await _automationService.scheduleNextSessionIfNeeded(tasks, userId, isRoot);
+      
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Scheduled ${task['activity_name'] ?? 'Session'} as upcoming.")),
+      );
+    } else {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("This task's scheduled time has already passed.")),
+      );
+    }
+    
+    await _loadMeshState();
+    if (mounted) Navigator.pop(context);
   }
 
   void _showActiveMeshDetails() async {
@@ -1126,10 +1319,13 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
             ),
             Consumer<ThemeProvider>(
               builder: (context, themeProvider, child) {
+                final bool isDark = themeProvider.themeMode == ThemeMode.dark ||
+                    (themeProvider.themeMode == ThemeMode.system &&
+                     MediaQuery.platformBrightnessOf(context) == Brightness.dark);
                 return SwitchListTile(
-                  secondary: Icon(themeProvider.themeMode == ThemeMode.dark ? Icons.dark_mode : Icons.light_mode),
+                  secondary: Icon(isDark ? Icons.dark_mode : Icons.light_mode),
                   title: const Text('Dark Mode'),
-                  value: themeProvider.themeMode == ThemeMode.dark,
+                  value: isDark,
                   onChanged: (val) {
                     themeProvider.toggleTheme(val);
                   },
@@ -1345,9 +1541,16 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
 
   Widget _buildTaskItem(Map<String, dynamic> task) {
     final bool isTest = task['is_test'] == true;
+    final bool isLeave = _leaveTaskIds.contains(task['id'].toString());
     final bool isTargeted = _currentAlarm != null && _currentAlarm!['task_id'].toString() == task['id'].toString();
-    final bool isActive = isTargeted && _currentAlarm!['status'] == 'active';
-    final Color statusColor = isActive ? Colors.green : (isTargeted ? const Color(0xFF0078D4) : (isTest ? Colors.orange : Colors.grey));
+    final bool isActive = isTargeted && _currentAlarm!['status'] == 'active' && !isLeave;
+    final Color statusColor = isLeave 
+      ? Colors.red 
+      : (isActive 
+          ? Colors.green 
+          : (isTargeted 
+              ? const Color(0xFF0078D4) 
+              : (isTest ? Colors.orange : Colors.grey)));
     final onSurface = Theme.of(context).colorScheme.onSurface;
 
     return GestureDetector(
@@ -1359,8 +1562,8 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
           color: onSurface.withOpacity(0.05),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: statusColor.withOpacity(0.3),
-            width: isActive ? 2 : 1,
+            color: isLeave ? Colors.red : statusColor.withOpacity(0.3),
+            width: (isActive || isLeave) ? 2 : 1,
           ),
         ),
         child: Row(
@@ -1368,46 +1571,48 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
             SizedBox(
               width: 40,
               height: 40,
-              child: isActive 
-                ? Center(
-                    child: Container(
-                      width: 12,
-                      height: 12,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.green,
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.green.withOpacity(0.5),
-                            blurRadius: 8,
-                            spreadRadius: 4,
-                          )
-                        ],
-                      ),
-                    ),
-                  )
-                : isTargeted
-                  ? Icon(Icons.notifications_active, color: statusColor, size: 28)
-                  : isTest 
-                    ? const Icon(Icons.science, color: Colors.orange, size: 28)
-                    : Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          CircularProgressIndicator(
-                            value: _getActivityPercentage(task['activity_name']),
-                            strokeWidth: 4,
-                            backgroundColor: statusColor.withOpacity(0.1),
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              _getActivityPercentage(task['activity_name']) >= 0.75 ? Colors.green :
-                              (_getActivityPercentage(task['activity_name']) >= 0.5 ? Colors.orange : Colors.red)
-                            ),
+              child: isLeave
+                ? const Icon(Icons.cancel, color: Colors.red, size: 28)
+                : (isActive 
+                    ? Center(
+                        child: Container(
+                          width: 12,
+                          height: 12,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.green,
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.green.withOpacity(0.5),
+                                blurRadius: 8,
+                                spreadRadius: 4,
+                              )
+                            ],
                           ),
-                          Text(
-                            "${(_getActivityPercentage(task['activity_name']) * 100).toInt()}%",
-                            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
-                          ),
-                        ],
-                      ),
+                        ),
+                      )
+                    : isTargeted
+                      ? Icon(Icons.notifications_active, color: statusColor, size: 28)
+                      : isTest 
+                        ? const Icon(Icons.science, color: Colors.orange, size: 28)
+                        : Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              CircularProgressIndicator(
+                                value: _getActivityPercentage(task['activity_name']),
+                                strokeWidth: 4,
+                                backgroundColor: statusColor.withOpacity(0.1),
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  _getActivityPercentage(task['activity_name']) >= 0.75 ? Colors.green :
+                                  (_getActivityPercentage(task['activity_name']) >= 0.5 ? Colors.orange : Colors.red)
+                                ),
+                              ),
+                              Text(
+                                "${(_getActivityPercentage(task['activity_name']) * 100).toInt()}%",
+                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          )),
             ),
             const SizedBox(width: 15),
             Expanded(
@@ -1415,10 +1620,10 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(task['activity_name'] ?? 'Session', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  if (isActive || isTargeted) ...[
+                  if (isLeave || isActive || isTargeted) ...[
                     const SizedBox(height: 4),
                     Text(
-                      isActive ? 'Session Active' : 'Upcoming',
+                      isLeave ? 'Leave' : (isActive ? 'Session Active' : 'Upcoming'),
                       style: TextStyle(
                         color: statusColor,
                         fontWeight: FontWeight.w600,
@@ -1433,7 +1638,7 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
                 ],
               ),
             ),
-            if (isActive || isTargeted)
+            if ((isActive || isTargeted) && !isLeave)
               SizedBox(
                 width: 32,
                 height: 32,

@@ -32,6 +32,14 @@ void onSessionStart() async {
   }
 
   final data = jsonDecode(alarmData);
+  final taskId = data['task_id'].toString();
+  final leaveTaskIds = prefs.getStringList('leave_task_ids') ?? [];
+  if (leaveTaskIds.contains(taskId)) {
+    await LogService.warn('AlarmManager', 'Task $taskId is marked as Leave. Aborting.');
+    await prefs.remove(alarmKey);
+    return;
+  }
+
   final activityName = data['activity_name'] ?? 'Session';
 
   // Mark as active
@@ -192,6 +200,8 @@ class SessionAutomationService {
   Future<void> scheduleNextSessionIfNeeded(List<Map<String, dynamic>> tasks, String userId, bool isRoot) async {
     final prefs = await SharedPreferences.getInstance();
     
+    final leaveTaskIds = prefs.getStringList('leave_task_ids') ?? [];
+    
     // Check for existing alarm
     if (prefs.containsKey(_alarmKey)) {
       final alarm = jsonDecode(prefs.getString(_alarmKey)!);
@@ -223,6 +233,7 @@ class SessionAutomationService {
       final dayName = dayNames[checkDate.weekday - 1];
 
       for (var task in tasks) {
+        if (leaveTaskIds.contains(task['id'].toString())) continue;
         final days = (task['day_of_week'] as String?)?.split(',') ?? [];
         if (!days.contains(dayName)) continue;
 
@@ -235,8 +246,8 @@ class SessionAutomationService {
         } else {
           final timeRange = task['time_range'] as String;
           final parts = timeRange.split(' - ');
-          start = _parseTime(parts[0], checkDate);
-          end = _parseTime(parts[1], checkDate);
+          start = parseTime(parts[0], checkDate);
+          end = parseTime(parts[1], checkDate);
         }
 
         if (start.isAfter(now)) {
@@ -325,7 +336,7 @@ class SessionAutomationService {
     }
   }
 
-  DateTime _parseTime(String timeStr, DateTime baseDate) {
+  static DateTime parseTime(String timeStr, DateTime baseDate) {
     timeStr = timeStr.trim().toUpperCase();
     int hour = 0;
     int minute = 0;

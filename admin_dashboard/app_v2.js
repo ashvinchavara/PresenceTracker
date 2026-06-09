@@ -25,7 +25,8 @@ let state = {
         column: 'full_name',
         direction: 'asc'
     },
-    selectedNodeFilter: null
+    selectedNodeFilter: null,
+    selectedTimetableNodeFilter: null
 };
 
 let selectedPickerUsers = []; // For Timetable Assignment
@@ -810,15 +811,45 @@ function formatTime12h(timeStr) {
 
 function renderTimetable() {
     const tableBody = document.getElementById('tt-table-body');
+    const foldersContainer = document.getElementById('timetable-folders-container');
     tableBody.innerHTML = '';
 
     if (!state.timetable) return;
-    console.log('Timetable Data:', state.timetable.slice(0, 2));
+
+    // Render Folders
+    if (foldersContainer) {
+        const nodesWithSchedules = new Set(state.timetable.map(t => t.dept_id));
+        const activeSchedNodes = state.departments.filter(d => nodesWithSchedules.has(d.id));
+
+        foldersContainer.innerHTML = activeSchedNodes.map(node => `
+            <div class="glass-panel folder-card ${state.selectedTimetableNodeFilter == node.id ? 'active' : ''}" 
+                 onclick="filterTimetableByNode(${node.id})"
+                 style="padding: 20px; cursor: pointer; display: flex; align-items: center; gap: 15px; transition: all 0.2s;">
+                <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(99, 102, 241, 0.1); display: flex; align-items: center; justify-content: center; color: var(--primary);">
+                    <span class="material-symbols-rounded">folder</span>
+                </div>
+                <div style="overflow: hidden;">
+                    <div style="font-weight: 600; font-size: 14px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">${node.name}</div>
+                    <div style="font-size: 11px; color: var(--text-muted);">${state.timetable.filter(t => t.dept_id == node.id).length} Sessions</div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    let filteredTimetable = [...state.timetable];
+    if (state.selectedTimetableNodeFilter) {
+        filteredTimetable = filteredTimetable.filter(t => t.dept_id == state.selectedTimetableNodeFilter);
+    }
+
+    if (filteredTimetable.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="6" class="loading-text">No operational schedules found.</td></tr>';
+        return;
+    }
 
     // Sorting Logic
     const dayOrder = { 'Monday': 1, 'Tuesday': 2, 'Wednesday': 3, 'Thursday': 4, 'Friday': 5, 'Saturday': 6, 'Sunday': 7 };
     
-    const sortedTimetable = [...state.timetable].sort((a, b) => {
+    const sortedTimetable = filteredTimetable.sort((a, b) => {
         // Take first day if multiple
         const firstDayA = (a.days || '').split(',')[0];
         const firstDayB = (b.days || '').split(',')[0];
@@ -872,6 +903,11 @@ function renderTimetable() {
         `;
     });
 }
+
+window.filterTimetableByNode = (nodeId) => {
+    state.selectedTimetableNodeFilter = (state.selectedTimetableNodeFilter === nodeId) ? null : nodeId;
+    renderTimetable();
+};
 
 window.deleteTimetable = async (id) => {
     if (!confirm('Delete this schedule entry?')) return;

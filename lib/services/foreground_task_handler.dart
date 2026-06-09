@@ -474,11 +474,13 @@ class SessionScheduler {
     DateTime? nextStartTime;
     DateTime? nextEndTime;
 
+    final leaveTaskIds = prefs.getStringList('leave_task_ids') ?? [];
     for (int dayOffset = 0; dayOffset < 7; dayOffset++) {
       final checkDate = now.add(Duration(days: dayOffset));
       final dayName = dayNames[checkDate.weekday - 1];
 
       for (var task in tasks) {
+        if (leaveTaskIds.contains(task['id'].toString())) continue;
         final days = (task['day_of_week'] as String?)?.split(',') ?? [];
         if (!days.contains(dayName)) continue;
 

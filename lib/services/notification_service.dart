@@ -2,7 +2,10 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'dart:convert';
 import 'session_automation_service.dart';
+import 'api_service.dart';
 
 /// Top-level background handler for notification action buttons.
 /// Required for handling actions when the app is killed/background.
@@ -15,20 +18,112 @@ void onNotificationActionBackground(NotificationResponse details) async {
     }
   } else if (details.actionId == 'mark_absent') {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('bg_mark_absent', true);
-    print('NOTIFICATION_SERVICE: [BG_ACTION] bg_mark_absent flag set');
+    await prefs.reload();
+    final isTestMode = prefs.getBool('is_test_mode') ?? false;
+    final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+    final alarmData = prefs.getString(alarmKey);
+    
+    if (alarmData != null) {
+      final data = jsonDecode(alarmData);
+      final taskIdStr = data['task_id'].toString();
+      
+      final leaveIds = prefs.getStringList('leave_task_ids') ?? [];
+      if (!leaveIds.contains(taskIdStr)) {
+        leaveIds.add(taskIdStr);
+        await prefs.setStringList('leave_task_ids', leaveIds);
+      }
+      await prefs.setString('last_leave_task', alarmData);
+      await prefs.remove(alarmKey);
+      
+      try {
+        await FlutterForegroundTask.stopService();
+      } catch (e) {
+        print('NOTIFICATION_SERVICE: [BG_ACTION] Error stopping service: $e');
+      }
+      
+      final notifications = NotificationService();
+      await notifications.init();
+      await notifications.cancel(100);
+      await notifications.cancel(101);
+      
+      await notifications.showAbsentSession(data['activity_name'] ?? 'Session');
+    }
+    print('NOTIFICATION_SERVICE: [BG_ACTION] Marked as Leave directly.');
   } else if (details.actionId == 'restart_attendance') {
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
-    final absentData = prefs.getString('absent_session_alarm');
-    if (absentData != null) {
-      await prefs.setString('session_alarm', absentData);
-      await prefs.remove('absent_session_alarm');
+    final lastLeaveTaskStr = prefs.getString('last_leave_task');
+    final leaveIds = prefs.getStringList('leave_task_ids') ?? [];
+    
+    if (lastLeaveTaskStr != null) {
+      final task = jsonDecode(lastLeaveTaskStr);
+      final taskIdStr = task['id']?.toString() ?? task['task_id']?.toString() ?? '';
+      leaveIds.remove(taskIdStr);
+      await prefs.setStringList('leave_task_ids', leaveIds);
+      
       final notifications = NotificationService();
       await notifications.init();
       await notifications.cancel(105);
-      onSessionStart();
-      print('NOTIFICATION_SERVICE: [BG_ACTION] Attendance restarted');
+      
+      final now = DateTime.now();
+      DateTime? startTime;
+      DateTime? endTime;
+      
+      if (task['start_time'] != null) {
+        startTime = DateTime.tryParse(task['start_time'].toString());
+      }
+      if (task['end_time'] != null) {
+        endTime = DateTime.tryParse(task['end_time'].toString());
+      }
+      
+      if (startTime == null || endTime == null) {
+        final timeRange = task['time_range'] as String?;
+        if (timeRange != null) {
+          final parts = timeRange.split(' - ');
+          startTime = SessionAutomationService.parseTime(parts[0], now);
+          endTime = SessionAutomationService.parseTime(parts[1], now);
+        }
+      }
+      
+      startTime ??= now;
+      endTime ??= now.add(const Duration(minutes: 5));
+      
+      final bool isUpcoming = now.isBefore(startTime);
+      final bool isOngoing = now.isAfter(startTime) && now.isBefore(endTime);
+      
+      final isTestMode = prefs.getBool('is_test_mode') ?? false;
+      final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+      
+      if (isOngoing) {
+        final userId = task['user_id']?.toString() ?? prefs.getString('user_id') ?? '';
+        final isRoot = task['is_root'] == true || (prefs.getBool('is_root_user') ?? false);
+        final alarmData = {
+          'task_id': taskIdStr,
+          'user_id': userId,
+          'activity_name': task['activity_name'],
+          'start_time': startTime.toIso8601String(),
+          'end_time': endTime.toIso8601String(),
+          'is_root': isRoot,
+          'is_test': task['is_test'] == true,
+          'status': 'active',
+        };
+        await prefs.setString(alarmKey, jsonEncode(alarmData));
+        onSessionStart();
+        print('NOTIFICATION_SERVICE: [BG_ACTION] Attendance restarted immediately');
+      } else if (isUpcoming) {
+        final userId = task['user_id']?.toString() ?? prefs.getString('user_id') ?? '';
+        final isRoot = task['is_root'] == true || (prefs.getBool('is_root_user') ?? false);
+        
+        final api = ApiService();
+        List<Map<String, dynamic>> tasks = await api.getCachedUserTimetableOffline();
+        if (tasks.isEmpty) {
+          tasks = await api.fetchUserTimetable(userId);
+        }
+        
+        final automation = SessionAutomationService();
+        await automation.scheduleNextSessionIfNeeded(tasks, userId, isRoot);
+        print('NOTIFICATION_SERVICE: [BG_ACTION] Attendance scheduled');
+      }
     }
   }
 }
@@ -84,18 +179,108 @@ class NotificationService {
       await _turnOnBluetooth();
     } else if (details.actionId == 'mark_absent') {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('bg_mark_absent', true);
-      print('NOTIFICATION_SERVICE: [ACTION] bg_mark_absent flag set');
+      await prefs.reload();
+      final isTestMode = prefs.getBool('is_test_mode') ?? false;
+      final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+      final alarmData = prefs.getString(alarmKey);
+      
+      if (alarmData != null) {
+        final data = jsonDecode(alarmData);
+        final taskIdStr = data['task_id'].toString();
+        
+        final leaveIds = prefs.getStringList('leave_task_ids') ?? [];
+        if (!leaveIds.contains(taskIdStr)) {
+          leaveIds.add(taskIdStr);
+          await prefs.setStringList('leave_task_ids', leaveIds);
+        }
+        await prefs.setString('last_leave_task', alarmData);
+        await prefs.remove(alarmKey);
+        
+        try {
+          await FlutterForegroundTask.stopService();
+        } catch (e) {
+          print('NOTIFICATION_SERVICE: [ACTION] Error stopping service: $e');
+        }
+        
+        await cancel(100);
+        await cancel(101);
+        
+        await showAbsentSession(data['activity_name'] ?? 'Session');
+      }
+      print('NOTIFICATION_SERVICE: [ACTION] Marked as Leave directly.');
     } else if (details.actionId == 'restart_attendance') {
       final prefs = await SharedPreferences.getInstance();
       await prefs.reload();
-      final absentData = prefs.getString('absent_session_alarm');
-      if (absentData != null) {
-        await prefs.setString('session_alarm', absentData);
-        await prefs.remove('absent_session_alarm');
+      final lastLeaveTaskStr = prefs.getString('last_leave_task');
+      final leaveIds = prefs.getStringList('leave_task_ids') ?? [];
+      
+      if (lastLeaveTaskStr != null) {
+        final task = jsonDecode(lastLeaveTaskStr);
+        final taskIdStr = task['id']?.toString() ?? task['task_id']?.toString() ?? '';
+        leaveIds.remove(taskIdStr);
+        await prefs.setStringList('leave_task_ids', leaveIds);
+        
         await cancel(105);
-        onSessionStart();
-        print('NOTIFICATION_SERVICE: [ACTION] Attendance restarted');
+        
+        final now = DateTime.now();
+        DateTime? startTime;
+        DateTime? endTime;
+        
+        if (task['start_time'] != null) {
+          startTime = DateTime.tryParse(task['start_time'].toString());
+        }
+        if (task['end_time'] != null) {
+          endTime = DateTime.tryParse(task['end_time'].toString());
+        }
+        
+        if (startTime == null || endTime == null) {
+          final timeRange = task['time_range'] as String?;
+          if (timeRange != null) {
+            final parts = timeRange.split(' - ');
+            startTime = SessionAutomationService.parseTime(parts[0], now);
+            endTime = SessionAutomationService.parseTime(parts[1], now);
+          }
+        }
+        
+        startTime ??= now;
+        endTime ??= now.add(const Duration(minutes: 5));
+        
+        final bool isUpcoming = now.isBefore(startTime);
+        final bool isOngoing = now.isAfter(startTime) && now.isBefore(endTime);
+        
+        final isTestMode = prefs.getBool('is_test_mode') ?? false;
+        final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+        
+        if (isOngoing) {
+          final userId = task['user_id']?.toString() ?? prefs.getString('user_id') ?? '';
+          final isRoot = task['is_root'] == true || (prefs.getBool('is_root_user') ?? false);
+          final alarmData = {
+            'task_id': taskIdStr,
+            'user_id': userId,
+            'activity_name': task['activity_name'],
+            'start_time': startTime.toIso8601String(),
+            'end_time': endTime.toIso8601String(),
+            'is_root': isRoot,
+            'is_test': task['is_test'] == true,
+            'status': 'active',
+          };
+          await prefs.setString(alarmKey, jsonEncode(alarmData));
+          onSessionStart();
+          print('NOTIFICATION_SERVICE: [ACTION] Attendance restarted immediately');
+        } else if (isUpcoming) {
+          final userId = task['user_id']?.toString() ?? prefs.getString('user_id') ?? '';
+          final isRoot = task['is_root'] == true || (prefs.getBool('is_root_user') ?? false);
+          
+          final api = ApiService();
+          List<Map<String, dynamic>> tasks = await api.getCachedUserTimetableOffline();
+          if (tasks.isEmpty) {
+            tasks = await api.fetchUserTimetable(userId);
+          }
+          
+          final automation = SessionAutomationService();
+          await automation.scheduleNextSessionIfNeeded(tasks, userId, isRoot);
+          print('NOTIFICATION_SERVICE: [ACTION] Attendance scheduled');
+        }
       }
     } else if (details.payload == 'bt_off') {
       await _turnOnBluetooth();
