@@ -159,17 +159,9 @@ class BleMeshService {
 
   void _updateForegroundServiceNotification(bool btOff) {
     if (btOff) {
-      FlutterForegroundTask.updateService(
-        notificationTitle: '⚠️ Bluetooth is OFF',
-        notificationText: 'Turn ON Bluetooth to track attendance for $_currentActivityName',
-        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
-      );
+
     } else {
-      FlutterForegroundTask.updateService(
-        notificationTitle: 'Tracking: $_currentActivityName',
-        notificationText: 'BLE mesh active • Peers scanned: ${_peers.length}',
-        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
-      );
+
     }
   }
 

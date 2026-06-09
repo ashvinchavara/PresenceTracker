@@ -228,9 +228,20 @@ class BleSessionTaskHandler extends TaskHandler {
     // Check if user tapped "Mark as Absent" on the BT alert notification
     try {
       final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
       if (prefs.getBool('bg_mark_absent') ?? false) {
         print('FG_SERVICE: bg_mark_absent flag detected — ending session early.');
         await prefs.remove('bg_mark_absent');
+        
+        final isTestMode = prefs.getBool('is_test_mode') ?? false;
+        final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+        final alarmData = prefs.getString(alarmKey);
+        
+        if (alarmData != null) {
+          await prefs.setString('absent_session_alarm', alarmData);
+          await NotificationService().showAbsentSession(_currentActivityName);
+        }
+        
         _onEnd();
         return;
       }
@@ -247,13 +258,9 @@ class BleSessionTaskHandler extends TaskHandler {
       return;
     }
 
-    // Periodic update: refresh foreground notification and ongoing peer-count notification
+    // Periodic update: ongoing peer-count notification
     final peers = _bleService.getLivePeers();
-    FlutterForegroundTask.updateService(
-      notificationTitle: 'Tracking: $_currentActivityName',
-      notificationText: 'Peers scanned: ${peers.length} • Running...',
-      notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
-    );
+
 
     if (_bleService.isBleActive) {
       await NotificationService().showOngoingSession(_currentActivityName, peers.length);

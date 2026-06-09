@@ -2,6 +2,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'session_automation_service.dart';
 
 /// Top-level background handler for notification action buttons.
 /// Required for handling actions when the app is killed/background.
@@ -16,6 +17,19 @@ void onNotificationActionBackground(NotificationResponse details) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('bg_mark_absent', true);
     print('NOTIFICATION_SERVICE: [BG_ACTION] bg_mark_absent flag set');
+  } else if (details.actionId == 'restart_attendance') {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    final absentData = prefs.getString('absent_session_alarm');
+    if (absentData != null) {
+      await prefs.setString('session_alarm', absentData);
+      await prefs.remove('absent_session_alarm');
+      final notifications = NotificationService();
+      await notifications.init();
+      await notifications.cancel(105);
+      onSessionStart();
+      print('NOTIFICATION_SERVICE: [BG_ACTION] Attendance restarted');
+    }
   }
 }
 
@@ -72,6 +86,17 @@ class NotificationService {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('bg_mark_absent', true);
       print('NOTIFICATION_SERVICE: [ACTION] bg_mark_absent flag set');
+    } else if (details.actionId == 'restart_attendance') {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final absentData = prefs.getString('absent_session_alarm');
+      if (absentData != null) {
+        await prefs.setString('session_alarm', absentData);
+        await prefs.remove('absent_session_alarm');
+        await cancel(105);
+        onSessionStart();
+        print('NOTIFICATION_SERVICE: [ACTION] Attendance restarted');
+      }
     } else if (details.payload == 'bt_off') {
       await _turnOnBluetooth();
     } else if (details.payload == 'ongoing') {
@@ -252,6 +277,40 @@ class NotificationService {
     try {
       await _notifications.cancel(id: id);
     } catch (e) {}
+  }
+
+  /// Notification shown when session is prematurely marked as absent.
+  Future<void> showAbsentSession(String activityName) async {
+    print('NOTIFICATION_SERVICE: [SHOW_ABSENT] $activityName');
+    const android = AndroidNotificationDetails(
+      'ongoing_session',
+      'Ongoing Session',
+      importance: Importance.low,
+      priority: Priority.low,
+      ongoing: true,
+      autoCancel: false,
+      icon: '@drawable/ic_notification',
+      largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher_round'),
+      actions: [
+        AndroidNotificationAction(
+          'restart_attendance',
+          'Restart Attendance',
+          showsUserInterface: false,
+          cancelNotification: true,
+        ),
+      ],
+    );
+    try {
+      await _notifications.show(
+        id: 105,
+        title: 'Marked as Absent: $activityName',
+        body: 'Attendance stopped. Tap Restart Attendance to resume.',
+        notificationDetails: const NotificationDetails(android: android),
+        payload: 'absent',
+      );
+    } catch (e) {
+      print('NOTIFICATION_SERVICE: [SHOW_ERROR] $e');
+    }
   }
 
   Future<void> showAlert(String title, String body) async {
