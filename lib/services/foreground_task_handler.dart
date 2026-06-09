@@ -225,6 +225,19 @@ class BleSessionTaskHandler extends TaskHandler {
     // onRepeatEvent fires every 10s — skip if not yet started.
     if (!_isMeshStarted) return;
 
+    // Check if user tapped "Mark as Absent" on the BT alert notification
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool('bg_mark_absent') ?? false) {
+        print('FG_SERVICE: bg_mark_absent flag detected — ending session early.');
+        await prefs.remove('bg_mark_absent');
+        _onEnd();
+        return;
+      }
+    } catch (e) {
+      print('FG_SERVICE: Error checking bg_mark_absent: $e');
+    }
+
     if (_bleService.isBtAlertShown) {
       FlutterForegroundTask.updateService(
         notificationTitle: '⚠️ Bluetooth is OFF',
@@ -234,7 +247,7 @@ class BleSessionTaskHandler extends TaskHandler {
       return;
     }
 
-    // Periodic update: refresh notification with peer count
+    // Periodic update: refresh foreground notification and ongoing peer-count notification
     final peers = _bleService.getLivePeers();
     FlutterForegroundTask.updateService(
       notificationTitle: 'Tracking: $_currentActivityName',
@@ -242,9 +255,14 @@ class BleSessionTaskHandler extends TaskHandler {
       notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
     );
 
+    if (_bleService.isBleActive) {
+      await NotificationService().showOngoingSession(_currentActivityName, peers.length);
+    }
+
     // Also persist peer data to SharedPreferences for UI sync
     _persistPeerData(peers);
   }
+
 
   Future<void> _persistPeerData(Map<String, Map<String, dynamic>> peers) async {
     try {

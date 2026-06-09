@@ -72,13 +72,21 @@ class BleMeshService {
       _isMeshRunning = true;
       _isBleActive = false;
       _bleError = null;
+      // Reset advertising state from any previous session
+      _isAdvertisingMesh = false;
+      _meshAdvStartTime = null;
 
       await _notifications.init();
       print('BleMeshService: Notifications initialized');
 
+      // Cancel any stale notifications from a previous session
+      await _notifications.cancel(100);
+      await _notifications.cancel(104);
+
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('is_mesh_active', true);
       await prefs.setString('mesh_task_id', taskId);
+      await prefs.remove('bg_mark_absent'); // clear any stale absent flag
 
       // Always start the BT state listener (handles BT on/off reactively)
       _startScanningWithStateListener(role, taskId, userId, activityName, isTest, startTimeStr);
@@ -89,7 +97,7 @@ class BleMeshService {
         print('BleMeshService: BT is OFF at init. Showing alert, waiting for BT to turn on...');
         _isBtAlertShown = true;
         _updateForegroundServiceNotification(true);
-        await _notifications.showBluetoothAlert();
+        await _notifications.showBluetoothAlert(_currentActivityName);
         // BT watchdog will keep alerting every 10s; BT state listener will start BLE when BT turns on
         _startBluetoothWatchdog();
         return; // Do NOT start scan/advertise yet
@@ -168,12 +176,14 @@ class BleMeshService {
   void _startBluetoothWatchdog() {
     _btWatchdog?.cancel();
     _btWatchdog = Timer.periodic(const Duration(seconds: 10), (timer) async {
+      if (!_isMeshRunning) { timer.cancel(); return; }
       final state = await FlutterBluePlus.adapterState.first;
       if (state != BluetoothAdapterState.on) {
-        print('BleMeshService: Watchdog - Bluetooth is OFF. Showing alert directly.');
+        print('BleMeshService: Watchdog - Bluetooth is OFF. Showing alert.');
         _isBtAlertShown = true;
+        _isBleActive = false;
         _updateForegroundServiceNotification(true);
-        await _notifications.showBluetoothAlert();
+        await _notifications.showBluetoothAlert(_currentActivityName);
         FlutterForegroundTask.sendDataToMain('bt_alert');
       } else {
         if (_isBtAlertShown) {
@@ -219,7 +229,8 @@ class BleMeshService {
           _isBtAlertShown = true;
           _isBleActive = false;
           _updateForegroundServiceNotification(true);
-          await _notifications.showBluetoothAlert();
+          await _notifications.showBluetoothAlert(activityName);
+
           FlutterForegroundTask.sendDataToMain('bt_alert');
           try { await FlutterBluePlus.stopScan(); } catch (e) {}
         }
