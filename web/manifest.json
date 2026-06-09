@@ -1,6 +1,6 @@
 {
-    "name": "presence_tracker",
-    "short_name": "presence_tracker",
+    "name": "Presence Tracker",
+    "short_name": "Presence Tracker",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
