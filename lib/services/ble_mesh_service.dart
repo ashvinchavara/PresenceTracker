@@ -112,6 +112,8 @@ class BleMeshService {
     }
   }
 
+  StreamSubscription<List<ScanResult>>? _scanSub;
+
   /// Tries to start scan and advertise. Sets _isBleActive=true only on full success.
   /// Shows BLE error notification if either fails for a non-BT reason.
   Future<void> _initBleWithErrorHandling(String role, String taskId, String activityName, bool isTest) async {
@@ -120,13 +122,15 @@ class BleMeshService {
 
     // Start scanning
     try {
+      await _scanSub?.cancel();
+      _scanSub = FlutterBluePlus.scanResults.listen((results) {
+        for (ScanResult r in results) {
+          _processScanResult(r);
+        }
+      });
+
       if (!FlutterBluePlus.isScanningNow) {
         await FlutterBluePlus.startScan(timeout: const Duration(days: 1), continuousUpdates: true);
-        FlutterBluePlus.scanResults.listen((results) {
-          for (ScanResult r in results) {
-            _processScanResult(r);
-          }
-        });
       }
       scanOk = true;
       print('BleMeshService: BLE scan started successfully.');
@@ -442,6 +446,8 @@ class BleMeshService {
     _notificationTimer?.cancel();
     _btWatchdog?.cancel();
     _btStateSub?.cancel();
+    await _scanSub?.cancel();
+    _scanSub = null;
     
     try { await FlutterBluePlus.stopScan(); } catch (_) {}
     try { await _blePeripheral.stop(); } catch (_) {}
