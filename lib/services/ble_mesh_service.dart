@@ -422,8 +422,16 @@ class BleMeshService {
         manufacturerData: builder.toBytes(),
       );
 
+      final AdvertiseSettings advSettings = AdvertiseSettings(
+        txPowerLevel: AdvertiseTxPower.advertiseTxPowerMedium,
+        advertiseMode: AdvertiseMode.advertiseModeLowLatency,
+      );
+
       print('BleMeshService: Starting BLE Peripheral advertisement with ${builder.length} bytes.');
-      await _blePeripheral.start(advertiseData: advData);
+      await _blePeripheral.start(
+        advertiseData: advData,
+        advertiseSettings: advSettings,
+      );
     } catch (e, stack) {
       print('BACKGROUND EXCEPTION in BleMeshService._updateAdvertising: $e');
       print(stack);
