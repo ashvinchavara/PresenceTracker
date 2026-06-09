@@ -1664,9 +1664,13 @@ class _MeshDetailsSheetState extends State<_MeshDetailsSheet> {
                   
                   String timeInfo = "Not seen yet";
                   if (isScanned && data != null) {
-                    final first = DateTime.fromMillisecondsSinceEpoch((data['first'] as int) * 1000);
-                    final last = DateTime.fromMillisecondsSinceEpoch((data['last'] as int) * 1000);
-                    timeInfo = "Seen: ${DateFormat('hh:mm:ss a').format(first)} - ${DateFormat('hh:mm:ss a').format(last)}";
+                    final firstVal = data['first'] ?? data['first_view'];
+                    final lastVal = data['last'] ?? data['last_view'];
+                    if (firstVal != null && lastVal != null) {
+                      final first = DateTime.fromMillisecondsSinceEpoch((firstVal as int) * 1000);
+                      final last = DateTime.fromMillisecondsSinceEpoch((lastVal as int) * 1000);
+                      timeInfo = "Seen: ${DateFormat('hh:mm:ss a').format(first)} - ${DateFormat('hh:mm:ss a').format(last)}";
+                    }
                   }
 
                   final canEdit = Provider.of<NodeRoleProvider>(context, listen: false).canUpload;
