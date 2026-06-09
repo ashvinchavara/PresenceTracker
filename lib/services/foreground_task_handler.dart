@@ -263,7 +263,8 @@ class BleSessionTaskHandler extends TaskHandler {
 
 
     if (_bleService.isBleActive) {
-      await NotificationService().showOngoingSession(_currentActivityName, peers.length);
+      final otherPeersCount = peers.keys.where((k) => k != _bleService.currentUserId).length;
+      await NotificationService().showOngoingSession(_currentActivityName, otherPeersCount);
     }
 
     // Also persist peer data to SharedPreferences for UI sync

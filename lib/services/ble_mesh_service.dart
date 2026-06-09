@@ -43,6 +43,8 @@ class BleMeshService {
   String? _bleError;
   String? get bleError => _bleError;
 
+  String get currentUserId => _currentUserId;
+
   /// Callback fired when a user is manually marked as absent.
   /// The foreground handler sets this to trigger session end.
   Function()? onAbsentMarked;
@@ -198,7 +200,8 @@ class BleMeshService {
     if (_isBtAlertShown) {
       _updateForegroundServiceNotification(true);
     } else {
-      _notifications.showOngoingSession(_currentActivityName, _peers.length);
+      final otherPeersCount = _peers.keys.where((k) => k != _currentUserId).length;
+      _notifications.showOngoingSession(_currentActivityName, otherPeersCount);
     }
   }
 
@@ -277,14 +280,39 @@ class BleMeshService {
           offset += 4;
           last = ByteData.sublistView(Uint8List.fromList(bytes.sublist(offset, offset + 4))).getUint32(0);
           offset += 4;
-        } else {
-           first = last = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        }
+
+        int firstVal = first;
+        int lastVal = last;
+        if (firstVal == 0 || lastVal == 0) {
+          if (!isRelayed) {
+            final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+            if (firstVal == 0) firstVal = nowSec;
+            if (lastVal == 0) lastVal = nowSec;
+          }
         }
 
         if (id == _currentUserId) {
-          final currentSelf = _peers[_currentUserId];
-          if (currentSelf != null) {
-            if (first < currentSelf['first']) currentSelf['first'] = first;
+          if (firstVal != 0 && lastVal != 0) {
+            if (!_peers.containsKey(_currentUserId)) {
+              _peers[_currentUserId] = {
+                'first': firstVal,
+                'last': lastVal,
+                'is_manually_added': false,
+                'scanned_direct': !isRelayed,
+              };
+            } else {
+              final currentSelf = _peers[_currentUserId]!;
+              final curFirst = currentSelf['first'];
+              final curLast = currentSelf['last'];
+              if (curFirst == null || firstVal < (curFirst as int)) {
+                currentSelf['first'] = firstVal;
+              }
+              if (curLast == null || lastVal > (curLast as int)) {
+                currentSelf['last'] = lastVal;
+              }
+              if (!isRelayed) currentSelf['scanned_direct'] = true;
+            }
           }
           continue;
         }
@@ -296,16 +324,27 @@ class BleMeshService {
 
         if (!_peers.containsKey(id)) {
           _peers[id] = {
-            'first': first,
-            'last': last,
+            'first': firstVal != 0 ? firstVal : null,
+            'last': lastVal != 0 ? lastVal : null,
             'is_manually_added': false,
             'scanned_direct': !isRelayed
           };
           _updateOngoingNotification();
         } else {
-          if (first < _peers[id]!['first']) _peers[id]!['first'] = first;
-          if (last > _peers[id]!['last']) _peers[id]!['last'] = last;
-          if (!isRelayed) _peers[id]!['scanned_direct'] = true;
+          final peerData = _peers[id]!;
+          if (firstVal != 0) {
+            final curFirst = peerData['first'];
+            if (curFirst == null || firstVal < (curFirst as int)) {
+              peerData['first'] = firstVal;
+            }
+          }
+          if (lastVal != 0) {
+            final curLast = peerData['last'];
+            if (curLast == null || lastVal > (curLast as int)) {
+              peerData['last'] = lastVal;
+            }
+          }
+          if (!isRelayed) peerData['scanned_direct'] = true;
         }
       }
     } catch (e) {
@@ -422,20 +461,28 @@ class BleMeshService {
 
     Map<String, dynamic> data;
     if (isSelf) {
-      data = {
-        'first': _activityStartEpoch,
-        'last': DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      };
+      final selfData = _peers[_currentUserId];
+      if (selfData != null && selfData['first'] != null && selfData['last'] != null) {
+        data = {
+          'first': selfData['first'],
+          'last': selfData['last'],
+        };
+      } else {
+        data = {
+          'first': 0,
+          'last': 0,
+        };
+      }
     } else {
       data = _peers[id] ?? {
-        'first': DateTime.now().millisecondsSinceEpoch ~/ 1000,
-        'last': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        'first': 0,
+        'last': 0,
       };
     }
     
     final bData = ByteData(8);
-    bData.setUint32(0, data['first']);
-    bData.setUint32(4, data['last']);
+    bData.setUint32(0, data['first'] ?? 0);
+    bData.setUint32(4, data['last'] ?? 0);
     builder.add(bData.buffer.asUint8List());
   }
 
