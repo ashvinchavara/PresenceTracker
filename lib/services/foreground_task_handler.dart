@@ -8,6 +8,7 @@ import 'api_service.dart';
 import 'session_automation_service.dart';
 import 'notification_service.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'log_service.dart';
 
 /// Top-level callback that the foreground service calls to set the handler.
 /// Must be a top-level or static function.
@@ -32,7 +33,7 @@ class BleSessionTaskHandler extends TaskHandler {
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    print('FG_SERVICE: onStart triggered at $timestamp by ${starter.name}');
+    await LogService.info('ForegroundTask', 'onStart triggered at $timestamp by ${starter.name}');
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
@@ -40,7 +41,7 @@ class BleSessionTaskHandler extends TaskHandler {
     final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
     final alarmData = prefs.getString(alarmKey);
     if (alarmData == null) {
-      print('FG_SERVICE: No session_alarm data found. Stopping service.');
+      await LogService.warn('ForegroundTask', 'No session_alarm data found. Stopping service.');
       FlutterForegroundTask.stopService();
       return;
     }
@@ -60,7 +61,7 @@ class BleSessionTaskHandler extends TaskHandler {
 
     if (now.isBefore(startTime)) {
       final waitDuration = startTime.difference(now);
-      print('FG_SERVICE: Waiting ${waitDuration.inSeconds}s before starting BLE mesh...');
+      await LogService.info('ForegroundTask', 'Waiting ${waitDuration.inSeconds}s before starting BLE mesh...');
 
       // Countdown notification: update every second
       _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
@@ -80,7 +81,7 @@ class BleSessionTaskHandler extends TaskHandler {
       _btWatchdogTimer = Timer.periodic(const Duration(seconds: 10), (t) async {
         final btState = await FlutterBluePlus.adapterState.first;
         if (btState != BluetoothAdapterState.on) {
-          print('FG_SERVICE: Waiting-phase BT watchdog: Bluetooth is OFF. Showing alert.');
+          await LogService.warn('ForegroundTask', 'Waiting-phase BT watchdog: Bluetooth is OFF. Showing alert.');
           FlutterForegroundTask.updateService(
             notificationTitle: '⚠️ Bluetooth is OFF',
             notificationText: 'Turn ON Bluetooth — $_currentActivityName starts soon',
@@ -91,7 +92,7 @@ class BleSessionTaskHandler extends TaskHandler {
       });
 
       _startMeshTimer = Timer(waitDuration, () async {
-        print('FG_SERVICE: Wait duration over. Starting BLE mesh now!');
+        await LogService.info('ForegroundTask', 'Wait duration over. Starting BLE mesh now!');
         _countdownTimer?.cancel();
         _btWatchdogTimer?.cancel();
         _isMeshStarted = true;
@@ -523,41 +524,65 @@ class SessionScheduler {
       };
 
       await prefs.setString('session_alarm', jsonEncode(alarmData));
-      print('FG_SERVICE: Next session alarm saved: ${nextTask['activity_name']} at $nextStartTime');
+      await LogService.info('Scheduler', 'Next session alarm saved: ${nextTask['activity_name']} at $nextStartTime');
 
       if (nextStartTime.isAfter(now)) {
         // Actually schedule the alarms via AndroidAlarmManager
         try {
           await AndroidAlarmManager.initialize();
           
-          print('FG_SERVICE: Scheduling start alarm at $nextStartTime');
-          await AndroidAlarmManager.oneShotAt(
-            nextStartTime,
-            1001, // _startAlarmId
-            onSessionStart,
-            exact: true,
-            wakeup: true,
-            rescheduleOnReboot: true,
-          );
-
-          if (nextEndTime != null) {
-            print('FG_SERVICE: Scheduling end alarm at $nextEndTime');
+          await LogService.info('Scheduler', 'Scheduling start alarm at $nextStartTime');
+          try {
             await AndroidAlarmManager.oneShotAt(
-              nextEndTime,
-              1002, // _endAlarmId
-              onSessionEnd,
+              nextStartTime,
+              1001, // _startAlarmId
+              onSessionStart,
               exact: true,
               wakeup: true,
               rescheduleOnReboot: true,
             );
+          } catch (e) {
+            await LogService.error('Scheduler', 'Failed to schedule exact start alarm from FG: $e. Retrying with exact=false.');
+            await AndroidAlarmManager.oneShotAt(
+              nextStartTime,
+              1001,
+              onSessionStart,
+              exact: false,
+              wakeup: true,
+              rescheduleOnReboot: true,
+            );
           }
-          print('FG_SERVICE: Next session alarms registered successfully.');
+
+          if (nextEndTime != null) {
+            await LogService.info('Scheduler', 'Scheduling end alarm at $nextEndTime');
+            try {
+              await AndroidAlarmManager.oneShotAt(
+                nextEndTime,
+                1002, // _endAlarmId
+                onSessionEnd,
+                exact: true,
+                wakeup: true,
+                rescheduleOnReboot: true,
+              );
+            } catch (e) {
+              await LogService.error('Scheduler', 'Failed to schedule exact end alarm from FG: $e. Retrying with exact=false.');
+              await AndroidAlarmManager.oneShotAt(
+                nextEndTime,
+                1002,
+                onSessionEnd,
+                exact: false,
+                wakeup: true,
+                rescheduleOnReboot: true,
+              );
+            }
+          }
+          await LogService.info('Scheduler', 'Next session alarms registered successfully.');
         } catch (e) {
-          print('FG_SERVICE: Failed to schedule alarms from foreground: $e');
+          await LogService.error('Scheduler', 'Failed to schedule alarms from foreground: $e');
         }
       } else {
         // Start immediately (session already in progress)
-        print('FG_SERVICE: Session already in progress, starting foreground service now.');
+        await LogService.info('Scheduler', 'Session already in progress, starting foreground service now.');
         onSessionStart();
       }
     }

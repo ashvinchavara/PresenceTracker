@@ -14,6 +14,7 @@ import '../../services/api_service.dart';
 import '../auth/auth_screen.dart';
 import './attendance_history_screen.dart';
 import './full_timetable_screen.dart';
+import './system_diagnostics_screen.dart';
 import '../../services/ble_mesh_service.dart';
 import '../../services/session_automation_service.dart';
 import '../../services/foreground_task_handler.dart';
@@ -1132,6 +1133,17 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
                   onChanged: (val) {
                     themeProvider.toggleTheme(val);
                   },
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.analytics_outlined),
+              title: const Text('System Diagnostics'),
+              onTap: () {
+                Navigator.pop(context); // Close drawer
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SystemDiagnosticsScreen()),
                 );
               },
             ),
