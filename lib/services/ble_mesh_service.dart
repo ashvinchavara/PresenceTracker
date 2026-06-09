@@ -242,9 +242,22 @@ class BleMeshService {
 
       int offset = 0;
       while (offset + 4 <= bytes.length) {
-        final id = bytes.sublist(offset, offset + 4).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+        final rawIdBytes = bytes.sublist(offset, offset + 4);
         offset += 4;
-        
+
+        final bData = ByteData.sublistView(Uint8List.fromList(rawIdBytes));
+        final parsedInt = bData.getUint32(0);
+        final hexId = rawIdBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+        String id;
+        if (int.tryParse(_currentUserId) != null) {
+          id = parsedInt.toString();
+        } else {
+          id = hexId;
+        }
+
+        print('BleMeshService: Scanned matching peer ID: $id (isSelf: ${id == _currentUserId})');
+
         if (offset >= bytes.length) break;
         final flags = bytes[offset];
         offset += 1;
@@ -376,8 +389,21 @@ class BleMeshService {
 
   void _addEntry(BytesBuilder builder, String id, bool isSelf) {
     final idBytes = Uint8List(4);
-    for (int i = 0; i < 4; i++) {
-       idBytes[i] = int.parse(id.substring(i*2, i*2 + 2), radix: 16);
+    final parsedInt = int.tryParse(id);
+    if (parsedInt != null) {
+      final bData = ByteData(4);
+      bData.setUint32(0, parsedInt);
+      idBytes.setAll(0, bData.buffer.asUint8List());
+    } else {
+      try {
+        final cleanId = id.replaceAll('-', '');
+        final hexStr = cleanId.padLeft(8, '0').substring(0, 8);
+        for (int i = 0; i < 4; i++) {
+          idBytes[i] = int.parse(hexStr.substring(i * 2, i * 2 + 2), radix: 16);
+        }
+      } catch (e) {
+        print("BleMeshService: Fallback encoding error for ID '$id': $e");
+      }
     }
     builder.add(idBytes);
 
