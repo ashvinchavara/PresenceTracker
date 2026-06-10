@@ -407,6 +407,11 @@ class NotificationService {
   /// Shown every 10s while BT is off during a session.
   Future<void> showBluetoothAlert([String activityName = 'current session']) async {
     print('NOTIFICATION_SERVICE: [SHOW_BT_ALERT]');
+    try {
+      await cancel(101);
+      await cancel(104);
+      await cancel(105);
+    } catch (_) {}
     final android = AndroidNotificationDetails(
       'bt_alert_v2',
       'Bluetooth Alert',
@@ -481,6 +486,11 @@ class NotificationService {
   /// Ongoing peer-count notification. Only shown after BLE is confirmed active.
   Future<void> showOngoingSession(String activityName, int userCount) async {
     print('NOTIFICATION_SERVICE: [SHOW_ONGOING] $activityName peers=$userCount');
+    try {
+      await cancel(100);
+      await cancel(104);
+      await cancel(105);
+    } catch (_) {}
     const android = AndroidNotificationDetails(
       'ongoing_session',
       'Ongoing Session',
@@ -515,6 +525,11 @@ class NotificationService {
   /// Notification shown when session is prematurely marked as absent.
   Future<void> showAbsentSession(String activityName) async {
     print('NOTIFICATION_SERVICE: [SHOW_ABSENT] $activityName');
+    try {
+      await cancel(100);
+      await cancel(101);
+      await cancel(104);
+    } catch (_) {}
     const android = AndroidNotificationDetails(
       'ongoing_session',
       'Ongoing Session',

@@ -88,6 +88,8 @@ class BleSessionTaskHandler extends TaskHandler {
             notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
           );
           await NotificationService().showBluetoothAlert();
+        } else {
+          await NotificationService().cancel(100);
         }
       });
 
@@ -258,6 +260,13 @@ class BleSessionTaskHandler extends TaskHandler {
       );
       return;
     }
+
+    // Bluetooth is ON: update foreground service notification to active
+    FlutterForegroundTask.updateService(
+      notificationTitle: '🟢 Session Active',
+      notificationText: 'Tracking attendance for $_currentActivityName',
+      notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
+    );
 
     // Periodic update: ongoing peer-count notification
     final peers = _bleService.getLivePeers();
