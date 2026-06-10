@@ -120,6 +120,15 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
           print('Dashboard: Bluetooth is already ON or turning ON. Skipping.');
           return;
         }
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.reload();
+        final lastTime = prefs.getInt('last_bt_request_time') ?? 0;
+        final now = DateTime.now().millisecondsSinceEpoch;
+        if (now - lastTime < 10000) {
+          print('Dashboard: Bluetooth request made just ${now - lastTime}ms ago. Skipping.');
+          return;
+        }
+        await prefs.setInt('last_bt_request_time', now);
         await FlutterBluePlus.turnOn();
       } catch (e) {
         print('Dashboard: Error enabling Bluetooth from notification: $e');
