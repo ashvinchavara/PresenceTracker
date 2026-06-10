@@ -38,6 +38,8 @@ void onNotificationActionBackground(NotificationResponse details) async {
       }
       await prefs.setString('last_leave_task', alarmData);
       await prefs.remove(alarmKey);
+      await prefs.setBool('is_mesh_active', false);
+      await prefs.setString('mesh_task_id', '');
       
       try {
         await FlutterForegroundTask.stopService();
@@ -233,6 +235,8 @@ class NotificationService {
         }
         await prefs.setString('last_leave_task', alarmData);
         await prefs.remove(alarmKey);
+        await prefs.setBool('is_mesh_active', false);
+        await prefs.setString('mesh_task_id', '');
         
         try {
           await FlutterForegroundTask.stopService();
