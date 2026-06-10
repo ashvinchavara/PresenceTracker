@@ -17,23 +17,7 @@ void onNotificationActionBackground(NotificationResponse details) async {
   DartPluginRegistrant.ensureInitialized();
   print('NOTIFICATION_SERVICE: [BG_ACTION] ${details.actionId} payload=${details.payload}');
   if (details.actionId == 'enable_bluetooth') {
-    try {
-      final state = await FlutterBluePlus.adapterState.first;
-      if (state == BluetoothAdapterState.on || state == BluetoothAdapterState.turningOn) {
-        print('NOTIFICATION_SERVICE: [BG_ACTION] Bluetooth is already ON or turning ON. Skipping.');
-        return;
-      }
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.reload();
-      final lastTime = prefs.getInt('last_bt_request_time') ?? 0;
-      final now = DateTime.now().millisecondsSinceEpoch;
-      if (now - lastTime < 10000) {
-        print('NOTIFICATION_SERVICE: [BG_ACTION] Bluetooth request made just ${now - lastTime}ms ago. Skipping.');
-        return;
-      }
-      await prefs.setInt('last_bt_request_time', now);
-      await FlutterBluePlus.turnOn();
-    } catch (e) {
+    try { await FlutterBluePlus.turnOn(); } catch (e) {
       print('NOTIFICATION_SERVICE: [BG_ACTION] turnOn failed: $e');
     }
   } else if (details.actionId == 'mark_absent') {
@@ -412,20 +396,6 @@ class NotificationService {
   Future<void> _turnOnBluetooth() async {
     print('NotificationService: Attempting to turn on Bluetooth');
     try {
-      final state = await FlutterBluePlus.adapterState.first;
-      if (state == BluetoothAdapterState.on || state == BluetoothAdapterState.turningOn) {
-        print('NotificationService: Bluetooth is already ON or turning ON. Skipping.');
-        return;
-      }
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.reload();
-      final lastTime = prefs.getInt('last_bt_request_time') ?? 0;
-      final now = DateTime.now().millisecondsSinceEpoch;
-      if (now - lastTime < 10000) {
-        print('NotificationService: Bluetooth request made just ${now - lastTime}ms ago. Skipping.');
-        return;
-      }
-      await prefs.setInt('last_bt_request_time', now);
       await FlutterBluePlus.turnOn();
     } catch (e) {
       print('NotificationService: TurnOn BT Error: $e');

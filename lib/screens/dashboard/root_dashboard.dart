@@ -114,30 +114,13 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
     print('Dashboard: Handling notification response: actionId=$actionId, payload=$payload');
 
     if (actionId == 'enable_bluetooth' || payload == 'bt_off') {
-      try {
-        final state = await FlutterBluePlus.adapterState.first;
-        if (state == BluetoothAdapterState.on || state == BluetoothAdapterState.turningOn) {
-          print('Dashboard: Bluetooth is already ON or turning ON. Skipping.');
-          return;
-        }
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.reload();
-        final lastTime = prefs.getInt('last_bt_request_time') ?? 0;
-        final now = DateTime.now().millisecondsSinceEpoch;
-        if (now - lastTime < 10000) {
-          print('Dashboard: Bluetooth request made just ${now - lastTime}ms ago. Skipping.');
-          return;
-        }
-        await prefs.setInt('last_bt_request_time', now);
-        await FlutterBluePlus.turnOn();
-      } catch (e) {
-        print('Dashboard: Error enabling Bluetooth from notification: $e');
-      }
+      // Handled directly by NotificationService._handleAction to prevent duplicate turnOn() calls
+      print('Dashboard: Bluetooth enable notification action handled by NotificationService.');
     } else if (payload == 'ongoing') {
       _showActiveMeshDetails();
     } else if (payload == 'mismatch') {
       _showMismatchDetailsDialog();
-    } else if (payload == 'absent' || actionId == 'restart_attendance') {
+    } else if (payload == 'absent' || actionId == 'restart_attendance' || actionId == 'mark_absent') {
       _loadMeshState();
     }
   }
