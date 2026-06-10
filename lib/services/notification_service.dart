@@ -1,6 +1,8 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import 'dart:ui';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'dart:convert';
@@ -11,6 +13,8 @@ import 'api_service.dart';
 /// Required for handling actions when the app is killed/background.
 @pragma('vm:entry-point')
 void onNotificationActionBackground(NotificationResponse details) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  DartPluginRegistrant.ensureInitialized();
   print('NOTIFICATION_SERVICE: [BG_ACTION] ${details.actionId} payload=${details.payload}');
   if (details.actionId == 'enable_bluetooth') {
     try { await FlutterBluePlus.turnOn(); } catch (e) {
@@ -25,7 +29,7 @@ void onNotificationActionBackground(NotificationResponse details) async {
     
     if (alarmData != null) {
       final data = jsonDecode(alarmData);
-      final taskIdStr = data['task_id'].toString();
+      final taskIdStr = data['task_id']?.toString() ?? data['id']?.toString() ?? '';
       
       final leaveIds = prefs.getStringList('leave_task_ids') ?? [];
       if (!leaveIds.contains(taskIdStr)) {
@@ -242,7 +246,7 @@ class NotificationService {
         await showAbsentSession(data['activity_name'] ?? 'Session');
       }
       print('NOTIFICATION_SERVICE: [ACTION] Marked as Leave directly.');
-    } else if (details.actionId == 'restart_attendance') {
+    } else if (details.actionId == 'restart_attendance' || (details.actionId == null && details.payload == 'absent')) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.reload();
       final lastLeaveTaskStr = prefs.getString('last_leave_task');
@@ -422,7 +426,7 @@ class NotificationService {
         AndroidNotificationAction(
           'mark_absent',
           'Mark as Absent',
-          showsUserInterface: false,
+          showsUserInterface: true,
           cancelNotification: true,
         ),
       ],
@@ -512,24 +516,16 @@ class NotificationService {
       'Ongoing Session',
       importance: Importance.low,
       priority: Priority.low,
-      ongoing: true,
-      autoCancel: false,
+      ongoing: false,
+      autoCancel: true,
       icon: '@drawable/ic_notification',
       largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher_round'),
-      actions: [
-        AndroidNotificationAction(
-          'restart_attendance',
-          'Restart Attendance',
-          showsUserInterface: false,
-          cancelNotification: true,
-        ),
-      ],
     );
     try {
       await _notifications.show(
         id: 105,
         title: 'Marked as Absent: $activityName',
-        body: 'Attendance stopped. Tap Restart Attendance to resume.',
+        body: 'Attendance stopped. Tap here to restart tracking.',
         notificationDetails: const NotificationDetails(android: android),
         payload: 'absent',
       );

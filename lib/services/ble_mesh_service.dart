@@ -182,14 +182,12 @@ class BleMeshService {
         _isBleActive = false;
         _updateForegroundServiceNotification(true);
         await _notifications.showBluetoothAlert(_currentActivityName);
-        FlutterForegroundTask.sendDataToMain('bt_alert');
       } else {
         if (_isBtAlertShown) {
           print('BleMeshService: Watchdog - Bluetooth is ON. Clearing alert.');
           _isBtAlertShown = false;
           _updateForegroundServiceNotification(false);
           await _notifications.cancel(100);
-          FlutterForegroundTask.sendDataToMain('bt_alert_clear');
         }
       }
     });
@@ -216,7 +214,6 @@ class BleMeshService {
             _isBtAlertShown = false;
             _updateForegroundServiceNotification(false);
             await _notifications.cancel(100);
-            FlutterForegroundTask.sendDataToMain('bt_alert_clear');
           }
           // If BLE not yet started (was off at init), try now
           if (!_isBleActive && _isMeshRunning) {
@@ -230,7 +227,6 @@ class BleMeshService {
           _updateForegroundServiceNotification(true);
           await _notifications.showBluetoothAlert(activityName);
 
-          FlutterForegroundTask.sendDataToMain('bt_alert');
           try { await FlutterBluePlus.stopScan(); } catch (e) {}
         }
       });
@@ -509,7 +505,6 @@ class BleMeshService {
     
     if (_isBtAlertShown) {
       _isBtAlertShown = false;
-      FlutterForegroundTask.sendDataToMain('bt_alert_clear');
     }
 
     // Cancel all alert/error notifications

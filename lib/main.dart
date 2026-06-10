@@ -26,17 +26,7 @@ Future<void> main() async {
   try {
     FlutterForegroundTask.initCommunicationPort();
 
-    FlutterForegroundTask.addTaskDataCallback((data) {
-      try {
-        if (data == 'bt_alert') {
-          NotificationService().showBluetoothAlert();
-        } else if (data == 'bt_alert_clear') {
-          NotificationService().cancel(100);
-        }
-      } catch (e) {
-        debugPrint('Foreground task callback error: $e');
-      }
-    });
+    FlutterForegroundTask.addTaskDataCallback((data) {});
   } catch (e) {
     debugPrint('Foreground task init failed: $e');
   }

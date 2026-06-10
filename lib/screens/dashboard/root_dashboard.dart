@@ -123,6 +123,8 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
       _showActiveMeshDetails();
     } else if (payload == 'mismatch') {
       _showMismatchDetailsDialog();
+    } else if (payload == 'absent' || actionId == 'restart_attendance') {
+      _loadMeshState();
     }
   }
 
@@ -275,10 +277,9 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
   void _onReceiveForegroundData(Object data) {
     print('Dashboard: Received data from foreground service: $data');
     if (!mounted) return;
-    if (data == 'bt_alert') {
-      NotificationService().showBluetoothAlert();
-    } else if (data == 'bt_alert_clear') {
-      NotificationService().cancel(100);
+    if (data == 'bt_alert' || data == 'bt_alert_clear') {
+      // Handled directly by BleMeshService/ForegroundTaskHandler background watchdogs
+      _loadMeshState();
     } else {
       _loadMeshState();
     }
@@ -408,18 +409,17 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
     // Check BT state immediately on app open
     FlutterBluePlus.adapterState.first.then((state) {
       if (state != BluetoothAdapterState.on && _isMeshActive) {
-        NotificationService().showBluetoothAlert();
+        print('Dashboard: Init - Bluetooth is OFF, background service will handle notification.');
       }
     });
 
-    // Periodically show Bluetooth alert every 10 seconds if BT is off
+    // Periodically monitor Bluetooth every 10 seconds if BT is off
     _btMonitoringTimer?.cancel();
     _btMonitoringTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
       if (!_isMeshActive) return;
       final state = await FlutterBluePlus.adapterState.first;
       if (state != BluetoothAdapterState.on) {
-        print('Dashboard: Periodic - Bluetooth is OFF, showing alert');
-        NotificationService().showBluetoothAlert();
+        print('Dashboard: Periodic - Bluetooth is OFF');
       }
     });
 
@@ -427,11 +427,9 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
     _btStateSubscription = FlutterBluePlus.adapterState.listen((state) {
       if (state != BluetoothAdapterState.on) {
         if (!_isMeshActive) return;
-        print('Dashboard: Bluetooth is OFF, showing alert');
-        NotificationService().showBluetoothAlert();
+        print('Dashboard: Bluetooth is OFF');
       } else {
-        print('Dashboard: Bluetooth is ON, clearing alert');
-        NotificationService().cancel(100);
+        print('Dashboard: Bluetooth is ON');
       }
     });
   }
