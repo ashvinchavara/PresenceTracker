@@ -327,7 +327,7 @@ class NotificationService {
     } else if (details.payload == 'bt_off') {
       await _turnOnBluetooth();
     } else if (details.payload == 'ongoing') {
-      _ongoingTapCallback?.call();
+      // Handled by _onNotificationTapCallback below to avoid duplicate execution
     }
 
     if (_onNotificationTapCallback != null) {
@@ -523,7 +523,7 @@ class NotificationService {
     );
 
     final bodyText = finalEndTimeStr != null
-        ? 'Users scanned: $userCount  •  Ends at $finalEndTimeStr'
+        ? 'Users scanned: $userCount  •  Ends at $finalEndTimeStr  •  Tap to view list'
         : 'Users scanned: $userCount  •  Tap to view list';
 
     try {
