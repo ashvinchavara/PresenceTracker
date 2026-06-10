@@ -496,7 +496,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
                     const Divider(height: 30),
                     
                     Text(
-                      "Edit Current User Time",
+                      "Edit Your Entry and Exit Time",
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
                         color: Theme.of(context).colorScheme.primary,
@@ -583,7 +583,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
                             }
                           }
                         },
-                        child: const Text("Save Current User Attendance"),
+                        child: const Text("Save Your Attendance"),
                       ),
                     ),
                     

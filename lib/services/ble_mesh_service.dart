@@ -642,4 +642,13 @@ class BleMeshService {
        onAbsentMarked?.call();
     }
   }
+
+  void overridePresenceTimes(String userId, int firstSec, int lastSec) {
+    _peers[userId] = {
+      'first': firstSec,
+      'last': lastSec,
+      'is_manually_added': true,
+      'scanned_direct': false
+    };
+  }
 }
