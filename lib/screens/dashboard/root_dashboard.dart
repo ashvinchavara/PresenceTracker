@@ -1960,47 +1960,52 @@ class _MeshDetailsSheetState extends State<_MeshDetailsSheet> {
   void _togglePresence(dynamic member, bool currentlyPresent) async {
     final bleService = BleMeshService();
     final String uId = member['id'].toString();
-    final livePeers = bleService.getLivePeers();
-    final data = livePeers[uId] ?? widget.activeScannedUsers[uId];
 
+    // Load active session alarm times
     final prefs = await SharedPreferences.getInstance();
     final isTestMode = prefs.getBool('is_test_mode') ?? false;
     final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
-    final alarmData = prefs.getString(alarmKey);
-
-    TimeOfDay entryTime = const TimeOfDay(hour: 10, minute: 0);
-    TimeOfDay exitTime = const TimeOfDay(hour: 11, minute: 0);
-
-    if (alarmData != null) {
+    final alarmDataStr = prefs.getString(alarmKey);
+    
+    DateTime? sessionStart;
+    DateTime? sessionEnd;
+    
+    if (alarmDataStr != null) {
       try {
-        final d = jsonDecode(alarmData);
-        if (d['start_time'] != null) {
-          final start = DateTime.parse(d['start_time']);
-          entryTime = TimeOfDay(hour: start.hour, minute: start.minute);
+        final data = jsonDecode(alarmDataStr);
+        if (data['start_time'] != null) {
+          sessionStart = DateTime.tryParse(data['start_time'].toString());
         }
-        if (d['end_time'] != null) {
-          final end = DateTime.parse(d['end_time']);
-          exitTime = TimeOfDay(hour: end.hour, minute: end.minute);
+        if (data['end_time'] != null) {
+          sessionEnd = DateTime.tryParse(data['end_time'].toString());
         }
       } catch (_) {}
     }
 
-    if (currentlyPresent && data != null) {
-      final firstVal = data['first'] ?? data['first_view'];
-      final lastVal = data['last'] ?? data['last_view'];
-      if (firstVal != null) {
-        try {
-          final dt = DateTime.fromMillisecondsSinceEpoch((firstVal as int) * 1000);
-          entryTime = TimeOfDay(hour: dt.hour, minute: dt.minute);
-        } catch (_) {}
-      }
-      if (lastVal != null) {
-        try {
-          final dt = DateTime.fromMillisecondsSinceEpoch((lastVal as int) * 1000);
-          exitTime = TimeOfDay(hour: dt.hour, minute: dt.minute);
-        } catch (_) {}
+    TimeOfDay? entryTime;
+    TimeOfDay? exitTime;
+
+    if (currentlyPresent) {
+      final livePeers = bleService.getLivePeers();
+      final data = livePeers[uId] ?? widget.activeScannedUsers[uId];
+      if (data != null) {
+        final firstVal = data['first'] ?? data['first_view'];
+        final lastVal = data['last'] ?? data['last_view'];
+        if (firstVal != null && lastVal != null) {
+          final first = DateTime.fromMillisecondsSinceEpoch((firstVal as int) * 1000);
+          final last = DateTime.fromMillisecondsSinceEpoch((lastVal as int) * 1000);
+          entryTime = TimeOfDay(hour: first.hour, minute: first.minute);
+          exitTime = TimeOfDay(hour: last.hour, minute: last.minute);
+        }
       }
     }
+
+    entryTime ??= sessionStart != null 
+        ? TimeOfDay(hour: sessionStart.hour, minute: sessionStart.minute)
+        : const TimeOfDay(hour: 10, minute: 0);
+    exitTime ??= sessionEnd != null 
+        ? TimeOfDay(hour: sessionEnd.hour, minute: sessionEnd.minute)
+        : const TimeOfDay(hour: 11, minute: 0);
 
     showDialog(
       context: context,
@@ -2009,46 +2014,31 @@ class _MeshDetailsSheetState extends State<_MeshDetailsSheet> {
           return AlertDialog(
             backgroundColor: Theme.of(context).colorScheme.surface,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            title: Text(
-              currentlyPresent ? "Edit/Override Presence Times" : "Mark Present & Edit Times",
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurface,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            title: Text(currentlyPresent ? "Edit Attendance Details" : "Mark Present"),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  "User: ${member['full_name'] ?? 'Unknown'}",
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.8),
-                  ),
+                  currentlyPresent 
+                      ? "Enforce entry & exit override times for ${member['full_name']}:"
+                      : "Manually mark ${member['full_name']} as present with times:",
+                  style: const TextStyle(fontSize: 14),
                 ),
                 const SizedBox(height: 20),
-                Text(
-                  "Set Entry and Exit Times:",
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
-                  ),
-                ),
-                const SizedBox(height: 10),
                 Row(
                   children: [
                     Expanded(
-                      child: TextButton.icon(
-                        icon: const Icon(Icons.login),
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.login, size: 16),
                         label: Text(
-                          "In: ${entryTime.format(context)}",
+                          "In: ${entryTime!.format(context)}",
                           style: const TextStyle(fontSize: 12),
                         ),
                         onPressed: () async {
                           final picked = await showTimePicker(
                             context: context,
-                            initialTime: entryTime,
+                            initialTime: entryTime!,
                           );
                           if (picked != null) {
                             setStateDialog(() => entryTime = picked);
@@ -2058,16 +2048,16 @@ class _MeshDetailsSheetState extends State<_MeshDetailsSheet> {
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: TextButton.icon(
-                        icon: const Icon(Icons.logout),
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.logout, size: 16),
                         label: Text(
-                          "Out: ${exitTime.format(context)}",
+                          "Out: ${exitTime!.format(context)}",
                           style: const TextStyle(fontSize: 12),
                         ),
                         onPressed: () async {
                           final picked = await showTimePicker(
                             context: context,
-                            initialTime: exitTime,
+                            initialTime: exitTime!,
                           );
                           if (picked != null) {
                             setStateDialog(() => exitTime = picked);
@@ -2086,42 +2076,39 @@ class _MeshDetailsSheetState extends State<_MeshDetailsSheet> {
               ),
               if (currentlyPresent)
                 ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red,
-                    foregroundColor: Colors.white,
-                  ),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
                   onPressed: () {
                     bleService.toggleManualPresence(uId, false);
                     Navigator.pop(ctx);
                     _sortAndSetMembers(_members);
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Attendance removed for ${member['full_name']}')),
+                      SnackBar(content: Text('Attendance removed for ${member['full_name']}'))
                     );
                   },
                   child: const Text("Remove"),
                 ),
               ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green,
-                  foregroundColor: Colors.white,
-                ),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
                 onPressed: () {
                   final now = DateTime.now();
-                  final entryDt = DateTime(now.year, now.month, now.day, entryTime.hour, entryTime.minute);
-                  final exitDt = DateTime(now.year, now.month, now.day, exitTime.hour, exitTime.minute);
+                  final entryDateTime = DateTime(now.year, now.month, now.day, entryTime!.hour, entryTime!.minute);
+                  final exitDateTime = DateTime(now.year, now.month, now.day, exitTime!.hour, exitTime!.minute);
+                  final entrySeconds = entryDateTime.millisecondsSinceEpoch ~/ 1000;
+                  final exitSeconds = exitDateTime.millisecondsSinceEpoch ~/ 1000;
 
-                  bleService.overridePresenceTimes(
+                  bleService.toggleManualPresence(
                     uId,
-                    entryDt.millisecondsSinceEpoch ~/ 1000,
-                    exitDt.millisecondsSinceEpoch ~/ 1000,
+                    true,
+                    firstTimestamp: entrySeconds,
+                    lastTimestamp: exitSeconds,
                   );
                   Navigator.pop(ctx);
                   _sortAndSetMembers(_members);
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Attendance override saved for ${member['full_name']}')),
+                    SnackBar(content: Text('Attendance updated for ${member['full_name']}'))
                   );
                 },
-                child: const Text("Save"),
+                child: Text(currentlyPresent ? "Save Times" : "Mark Present"),
               ),
             ],
           );
@@ -2181,7 +2168,6 @@ class _MeshDetailsSheetState extends State<_MeshDetailsSheet> {
                     color: isScanned ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.05),
                     margin: const EdgeInsets.only(bottom: 8),
                     child: ListTile(
-                      onTap: canEdit ? () => _togglePresence(m, isScanned) : null,
                       leading: CircleAvatar(
                         backgroundColor: isScanned ? Colors.green : Colors.red.shade300,
                         child: Icon(isScanned ? Icons.bluetooth_connected : Icons.person_off, color: Colors.white),

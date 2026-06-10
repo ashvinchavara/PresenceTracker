@@ -627,11 +627,11 @@ class BleMeshService {
 
   Map<String, Map<String, dynamic>> getLivePeers() => _peers;
 
-  void toggleManualPresence(String userId, bool isPresent) {
+  void toggleManualPresence(String userId, bool isPresent, {int? firstTimestamp, int? lastTimestamp}) {
     if (isPresent) {
        _peers[userId] = {
-         'first': DateTime.now().millisecondsSinceEpoch ~/ 1000,
-         'last': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+         'first': firstTimestamp ?? (DateTime.now().millisecondsSinceEpoch ~/ 1000),
+         'last': lastTimestamp ?? (DateTime.now().millisecondsSinceEpoch ~/ 1000),
          'is_manually_added': true,
          'scanned_direct': false
        };
@@ -641,14 +641,5 @@ class BleMeshService {
        print('BleMeshService: User $userId marked absent. Triggering session end.');
        onAbsentMarked?.call();
     }
-  }
-
-  void overridePresenceTimes(String userId, int firstSec, int lastSec) {
-    _peers[userId] = {
-      'first': firstSec,
-      'last': lastSec,
-      'is_manually_added': true,
-      'scanned_direct': false
-    };
   }
 }
