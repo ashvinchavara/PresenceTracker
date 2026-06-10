@@ -17,8 +17,11 @@ void onNotificationActionBackground(NotificationResponse details) async {
   DartPluginRegistrant.ensureInitialized();
   print('NOTIFICATION_SERVICE: [BG_ACTION] ${details.actionId} payload=${details.payload}');
   if (details.actionId == 'enable_bluetooth') {
-    try { await FlutterBluePlus.turnOn(); } catch (e) {
-      print('NOTIFICATION_SERVICE: [BG_ACTION] turnOn failed: $e');
+    final state = FlutterBluePlus.adapterStateNow;
+    if (state != BluetoothAdapterState.on && state != BluetoothAdapterState.turningOn) {
+      try { await FlutterBluePlus.turnOn(); } catch (e) {
+        print('NOTIFICATION_SERVICE: [BG_ACTION] turnOn failed: $e');
+      }
     }
   } else if (details.actionId == 'mark_absent') {
     final prefs = await SharedPreferences.getInstance();
@@ -394,6 +397,11 @@ class NotificationService {
   }
 
   Future<void> _turnOnBluetooth() async {
+    final state = FlutterBluePlus.adapterStateNow;
+    if (state == BluetoothAdapterState.on || state == BluetoothAdapterState.turningOn) {
+      print('NotificationService: Bluetooth is already ON or turning ON. Skipping turnOn call.');
+      return;
+    }
     print('NotificationService: Attempting to turn on Bluetooth');
     try {
       await FlutterBluePlus.turnOn();
