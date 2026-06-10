@@ -114,13 +114,15 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
     print('Dashboard: Handling notification response: actionId=$actionId, payload=$payload');
 
     if (actionId == 'enable_bluetooth' || payload == 'bt_off') {
-      final state = FlutterBluePlus.adapterStateNow;
-      if (state != BluetoothAdapterState.on && state != BluetoothAdapterState.turningOn) {
-        try {
-          await FlutterBluePlus.turnOn();
-        } catch (e) {
-          print('Dashboard: Error enabling Bluetooth from notification: $e');
+      try {
+        final state = await FlutterBluePlus.adapterState.first;
+        if (state == BluetoothAdapterState.on || state == BluetoothAdapterState.turningOn) {
+          print('Dashboard: Bluetooth is already ON or turning ON. Skipping.');
+          return;
         }
+        await FlutterBluePlus.turnOn();
+      } catch (e) {
+        print('Dashboard: Error enabling Bluetooth from notification: $e');
       }
     } else if (payload == 'ongoing') {
       _showActiveMeshDetails();
