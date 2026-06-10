@@ -687,7 +687,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
                               if (success) {
                                 if (context.mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    Text("Attendance marked for ${selectedUser['name'] ?? selectedUser['full_name']}")
+                                    SnackBar(content: Text("Attendance marked for ${selectedUser['name'] ?? selectedUser['full_name']}")),
                                   );
                                 }
                                 Navigator.pop(ctx);
