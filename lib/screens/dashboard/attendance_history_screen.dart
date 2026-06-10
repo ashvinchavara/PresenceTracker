@@ -415,6 +415,312 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     );
   }
 
+  void _showManageAttendanceDialog(
+      Map<String, dynamic> act, Map<String, dynamic>? session, String dateStr) async {
+    final userProvider = Provider.of<NodeRoleProvider>(context, listen: false);
+    final currentUserIdStr = userProvider.currentUserNode?.id ?? '';
+    final currentUserId = int.tryParse(currentUserIdStr) ?? 0;
+    final timetableId = int.tryParse(act['id']?.toString() ?? '') ?? int.tryParse(act['timetable_id']?.toString() ?? '') ?? 0;
+
+    List<dynamic> allUsers = [];
+    bool loadingUsers = true;
+
+    TimeOfDay? entryTime;
+    TimeOfDay? exitTime;
+
+    if (session != null) {
+      if (session['entry_time'] != null && session['entry_time'] != '--:--') {
+        try {
+          final parts = session['entry_time'].toString().split(':');
+          entryTime = TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1]));
+        } catch (_) {}
+      }
+      if (session['exit_time'] != null && session['exit_time'] != '--:--') {
+        try {
+          final parts = session['exit_time'].toString().split(':');
+          exitTime = TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1]));
+        } catch (_) {}
+      }
+    }
+
+    entryTime ??= const TimeOfDay(hour: 10, minute: 0);
+    exitTime ??= const TimeOfDay(hour: 11, minute: 0);
+
+    dynamic selectedUser;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            if (loadingUsers) {
+              _apiService.fetchAllUsers().then((users) {
+                if (ctx.mounted) {
+                  setStateDialog(() {
+                    allUsers = users;
+                    loadingUsers = false;
+                  });
+                }
+              });
+            }
+
+            return AlertDialog(
+              backgroundColor: Theme.of(context).colorScheme.surface,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Text(
+                "Manage Attendance",
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurface,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "Activity: ${act['activity_name']}",
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.8),
+                      ),
+                    ),
+                    Text(
+                      "Date: $dateStr",
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                        fontSize: 13,
+                      ),
+                    ),
+                    const Divider(height: 30),
+                    
+                    Text(
+                      "Edit Current User Time",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextButton.icon(
+                            icon: const Icon(Icons.login),
+                            label: Text(
+                              "In: ${entryTime!.format(context)}",
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                            onPressed: () async {
+                              final picked = await showTimePicker(
+                                context: context,
+                                initialTime: entryTime!,
+                              );
+                              if (picked != null) {
+                                setStateDialog(() => entryTime = picked);
+                              }
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TextButton.icon(
+                            icon: const Icon(Icons.logout),
+                            label: Text(
+                              "Out: ${exitTime!.format(context)}",
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                            onPressed: () async {
+                              final picked = await showTimePicker(
+                                context: context,
+                                initialTime: exitTime!,
+                              );
+                              if (picked != null) {
+                                setStateDialog(() => exitTime = picked);
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Theme.of(context).colorScheme.primary,
+                          foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                        onPressed: () async {
+                          final entryStr = "${entryTime!.hour.toString().padLeft(2, '0')}:${entryTime!.minute.toString().padLeft(2, '0')}:00";
+                          final exitStr = "${exitTime!.hour.toString().padLeft(2, '0')}:${exitTime!.minute.toString().padLeft(2, '0')}:00";
+
+                          final targetUserId = int.tryParse(userProvider.currentUserNode?.id ?? '') ?? 0;
+                          final success = await _apiService.syncAttendanceRecord(
+                            timetableId,
+                            targetUserId,
+                            currentUserId,
+                            dateStr,
+                            entryTime: entryStr,
+                            exitTime: exitStr,
+                          );
+
+                          if (success) {
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text("Attendance updated successfully")),
+                              );
+                            }
+                            Navigator.pop(ctx);
+                            _fetchData();
+                          } else {
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text("Failed to update attendance")),
+                              );
+                            }
+                          }
+                        },
+                        child: const Text("Save Current User Attendance"),
+                      ),
+                    ),
+                    
+                    const Divider(height: 40),
+
+                    Text(
+                      "Mark Attendance for Another User",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    if (loadingUsers)
+                      const Center(child: CircularProgressIndicator())
+                    else ...[
+                      DropdownButtonFormField<dynamic>(
+                        decoration: const InputDecoration(
+                          labelText: "Select User",
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        ),
+                        isExpanded: true,
+                        value: selectedUser,
+                        items: allUsers.map((u) {
+                          return DropdownMenuItem<dynamic>(
+                            value: u,
+                            child: Text("${u['name'] ?? u['full_name'] ?? 'User'} (${u['role'] ?? u['desig'] ?? ''})"),
+                          );
+                        }).toList(),
+                        onChanged: (val) {
+                          setStateDialog(() => selectedUser = val);
+                        },
+                      ),
+                      const SizedBox(height: 15),
+                      if (selectedUser != null) ...[
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextButton.icon(
+                                icon: const Icon(Icons.login),
+                                label: Text(
+                                  "In: ${entryTime!.format(context)}",
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                                onPressed: () async {
+                                  final picked = await showTimePicker(
+                                    context: context,
+                                    initialTime: entryTime!,
+                                  );
+                                  if (picked != null) {
+                                    setStateDialog(() => entryTime = picked);
+                                  }
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: TextButton.icon(
+                                icon: const Icon(Icons.logout),
+                                label: Text(
+                                  "Out: ${exitTime!.format(context)}",
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                                onPressed: () async {
+                                  final picked = await showTimePicker(
+                                    context: context,
+                                    initialTime: exitTime!,
+                                  );
+                                  if (picked != null) {
+                                    setStateDialog(() => exitTime = picked);
+                                  }
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Theme.of(context).colorScheme.secondary,
+                              foregroundColor: Theme.of(context).colorScheme.onSecondary,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            onPressed: () async {
+                              final entryStr = "${entryTime!.hour.toString().padLeft(2, '0')}:${entryTime!.minute.toString().padLeft(2, '0')}:00";
+                              final exitStr = "${exitTime!.hour.toString().padLeft(2, '0')}:${exitTime!.minute.toString().padLeft(2, '0')}:00";
+
+                              final targetId = int.tryParse(selectedUser['id'].toString()) ?? 0;
+                              final success = await _apiService.syncAttendanceRecord(
+                                timetableId,
+                                targetId,
+                                currentUserId,
+                                dateStr,
+                                entryTime: entryStr,
+                                exitTime: exitStr,
+                              );
+
+                              if (success) {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    Text("Attendance marked for ${selectedUser['name'] ?? selectedUser['full_name']}")
+                                  );
+                                }
+                                Navigator.pop(ctx);
+                                _fetchData();
+                              } else {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text("Failed to mark attendance")),
+                                  );
+                                }
+                              }
+                            },
+                            child: const Text("Mark Attendance"),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text("Close"),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   Widget _buildDayDetails(DateTime day) {
     final dateStr = DateFormat('yyyy-MM-dd').format(day);
     final dayName = DateFormat('EEEE').format(day);
@@ -504,7 +810,9 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
            statusIcon = Icons.today;
         }
 
-        return Container(
+        final bool canUpload = Provider.of<NodeRoleProvider>(context, listen: false).canUpload;
+
+        final cardWidget = Container(
           margin: const EdgeInsets.only(bottom: 15),
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
@@ -549,6 +857,15 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
             ],
           ),
         );
+
+        if (canUpload) {
+          return InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: () => _showManageAttendanceDialog(act, session, dateStr),
+            child: cardWidget,
+          );
+        }
+        return cardWidget;
       }).toList(),
     ],
   );
