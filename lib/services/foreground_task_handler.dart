@@ -30,6 +30,7 @@ class BleSessionTaskHandler extends TaskHandler {
   Timer? _btWatchdogTimer;  // 10-second BT check during waiting phase
   bool _isMeshStarted = false;
   String _currentActivityName = 'Session';
+  DateTime? _sessionEndTime;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -58,6 +59,7 @@ class BleSessionTaskHandler extends TaskHandler {
 
     _currentActivityName = activityName;
     _isMeshStarted = false;
+    _sessionEndTime = endTime;
 
     if (now.isBefore(startTime)) {
       final waitDuration = startTime.difference(now);
@@ -201,25 +203,6 @@ class BleSessionTaskHandler extends TaskHandler {
       print('FG_SERVICE: End scheduled in ${endDelay.inSeconds}s');
       _endTimer = Timer(endDelay, _onEnd);
     }
-
-    _updateNotificationWithEnd(endTime);
-  }
-
-  Future<void> _updateNotificationWithEnd(DateTime endTime) async {
-    final btState = await FlutterBluePlus.adapterState.first;
-    if (btState != BluetoothAdapterState.on) {
-      FlutterForegroundTask.updateService(
-        notificationTitle: '⚠️ Bluetooth is OFF',
-        notificationText: 'Turn ON Bluetooth to track attendance for $_currentActivityName',
-        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
-      );
-    } else {
-      FlutterForegroundTask.updateService(
-        notificationTitle: 'Tracking: $_currentActivityName',
-        notificationText: 'BLE mesh active • Session ends at ${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}',
-        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
-      );
-    }
   }
 
   @override
@@ -253,20 +236,8 @@ class BleSessionTaskHandler extends TaskHandler {
     }
 
     if (_bleService.isBtAlertShown) {
-      FlutterForegroundTask.updateService(
-        notificationTitle: '⚠️ Bluetooth is OFF',
-        notificationText: 'Turn ON Bluetooth to track attendance for $_currentActivityName',
-        notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
-      );
       return;
     }
-
-    // Bluetooth is ON: update foreground service notification to active
-    FlutterForegroundTask.updateService(
-      notificationTitle: '🟢 Session Active',
-      notificationText: 'Tracking attendance for $_currentActivityName',
-      notificationIcon: const NotificationIcon(metaDataName: 'com.pravera.flutter_foreground_task.NOTIFICATION_ICON'),
-    );
 
     // Periodic update: ongoing peer-count notification
     final peers = _bleService.getLivePeers();
@@ -274,7 +245,15 @@ class BleSessionTaskHandler extends TaskHandler {
 
     if (_bleService.isBleActive) {
       final otherPeersCount = peers.keys.where((k) => k != _bleService.currentUserId).length;
-      await NotificationService().showOngoingSession(_currentActivityName, otherPeersCount);
+      String? endTimeStr;
+      if (_sessionEndTime != null) {
+        endTimeStr = '${_sessionEndTime!.hour.toString().padLeft(2, '0')}:${_sessionEndTime!.minute.toString().padLeft(2, '0')}';
+      }
+      await NotificationService().showOngoingSession(
+        _currentActivityName,
+        otherPeersCount,
+        endTimeStr: endTimeStr,
+      );
     }
 
     // Also persist peer data to SharedPreferences for UI sync

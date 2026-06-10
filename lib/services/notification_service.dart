@@ -484,13 +484,32 @@ class NotificationService {
   Future<void> cancelBleError() async => cancel(104);
 
   /// Ongoing peer-count notification. Only shown after BLE is confirmed active.
-  Future<void> showOngoingSession(String activityName, int userCount) async {
+  Future<void> showOngoingSession(String activityName, int userCount, {String? endTimeStr}) async {
     print('NOTIFICATION_SERVICE: [SHOW_ONGOING] $activityName peers=$userCount');
     try {
       await cancel(100);
       await cancel(104);
       await cancel(105);
     } catch (_) {}
+
+    String? finalEndTimeStr = endTimeStr;
+    if (finalEndTimeStr == null) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.reload();
+        final isTestMode = prefs.getBool('is_test_mode') ?? false;
+        final alarmKey = isTestMode ? 'test_session_alarm' : 'session_alarm';
+        final alarmData = prefs.getString(alarmKey);
+        if (alarmData != null) {
+          final data = jsonDecode(alarmData);
+          if (data['end_time'] != null) {
+            final endTime = DateTime.parse(data['end_time']);
+            finalEndTimeStr = '${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}';
+          }
+        }
+      } catch (_) {}
+    }
+
     const android = AndroidNotificationDetails(
       'ongoing_session',
       'Ongoing Session',
@@ -502,11 +521,16 @@ class NotificationService {
       icon: '@drawable/ic_notification',
       largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher_round'),
     );
+
+    final bodyText = finalEndTimeStr != null
+        ? 'Users scanned: $userCount  •  Ends at $finalEndTimeStr'
+        : 'Users scanned: $userCount  •  Tap to view list';
+
     try {
       await _notifications.show(
         id: 101,
         title: '📡 Tracking: $activityName',
-        body: 'Users scanned: $userCount  •  Tap to view list',
+        body: bodyText,
         notificationDetails: const NotificationDetails(android: android),
         payload: 'ongoing',
       );
