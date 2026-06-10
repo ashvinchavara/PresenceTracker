@@ -116,7 +116,7 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
     if (actionId == 'enable_bluetooth' || payload == 'bt_off') {
       // Handled directly by NotificationService._handleAction to prevent duplicate turnOn() calls
       print('Dashboard: Bluetooth enable notification action handled by NotificationService.');
-    } else if (payload == 'ongoing') {
+    } else if (payload == 'ongoing' || actionId == 'view_list') {
       _showActiveMeshDetails();
     } else if (payload == 'mismatch') {
       _showMismatchDetailsDialog();

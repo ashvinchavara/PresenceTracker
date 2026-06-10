@@ -510,28 +510,44 @@ class NotificationService {
       } catch (_) {}
     }
 
-    const android = AndroidNotificationDetails(
+    final bodyText = finalEndTimeStr != null
+        ? 'Users scanned: $userCount  •  Ends at $finalEndTimeStr\nTap to view list'
+        : 'Users scanned: $userCount\nTap to view list';
+
+    final android = AndroidNotificationDetails(
       'ongoing_session',
       'Ongoing Session',
-      importance: Importance.low,
-      priority: Priority.low,
+      importance: Importance.high,
+      priority: Priority.high,
+      playSound: false,
+      enableVibration: false,
+      onlyAlertOnce: true,
       showWhen: true,
       ongoing: true,
       autoCancel: false,
       icon: '@drawable/ic_notification',
-      largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher_round'),
+      largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher_round'),
+      styleInformation: BigTextStyleInformation(
+        bodyText,
+        contentTitle: '📡 Tracking: $activityName',
+        summaryText: 'Session Active',
+      ),
+      actions: const [
+        AndroidNotificationAction(
+          'view_list',
+          'View List',
+          showsUserInterface: true,
+          cancelNotification: false,
+        ),
+      ],
     );
-
-    final bodyText = finalEndTimeStr != null
-        ? 'Users scanned: $userCount  •  Ends at $finalEndTimeStr  •  Tap to view list'
-        : 'Users scanned: $userCount  •  Tap to view list';
 
     try {
       await _notifications.show(
         id: 101,
         title: '📡 Tracking: $activityName',
         body: bodyText,
-        notificationDetails: const NotificationDetails(android: android),
+        notificationDetails: NotificationDetails(android: android),
         payload: 'ongoing',
       );
     } catch (e) {
