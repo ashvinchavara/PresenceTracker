@@ -47,8 +47,21 @@ void onNotificationActionBackground(NotificationResponse details) async {
       await notifications.cancel(101);
       
       await notifications.showAbsentSession(data['activity_name'] ?? 'Session');
+
+      // Reschedule next session in the background
+      final userId = prefs.getString('user_id') ?? '';
+      final isRoot = prefs.getBool('is_root_user') ?? false;
+      if (userId.isNotEmpty) {
+        final api = ApiService();
+        List<Map<String, dynamic>> tasks = await api.getCachedUserTimetableOffline();
+        if (tasks.isEmpty) {
+          tasks = await api.fetchUserTimetable(userId);
+        }
+        final automation = SessionAutomationService();
+        await automation.scheduleNextSessionIfNeeded(tasks, userId, isRoot);
+      }
     }
-    print('NOTIFICATION_SERVICE: [BG_ACTION] Marked as Leave directly.');
+    print('NOTIFICATION_SERVICE: [BG_ACTION] Marked as Absent directly.');
   } else if (details.actionId == 'restart_attendance') {
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
@@ -135,10 +148,21 @@ class NotificationService {
 
   final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
   VoidCallback? _ongoingTapCallback;
+  NotificationResponse? _pendingResponse;
+  Function(NotificationResponse response)? _onNotificationTapCallback;
   bool _initialized = false;
 
   void setOngoingTapCallback(VoidCallback callback) {
     _ongoingTapCallback = callback;
+  }
+
+  void setNotificationTapCallback(Function(NotificationResponse response) callback) {
+    _onNotificationTapCallback = callback;
+    if (_pendingResponse != null) {
+      final response = _pendingResponse!;
+      _pendingResponse = null;
+      callback(response);
+    }
   }
 
   Future<void> init() async {
@@ -166,6 +190,16 @@ class NotificationService {
       print('NOTIFICATION_SERVICE: [INIT_RESULT] $initialized');
       _initialized = initialized ?? false;
       await _createChannels();
+
+      // Check if launched by notification
+      final launchDetails = await _notifications.getNotificationAppLaunchDetails();
+      if (launchDetails?.didNotificationLaunchApp ?? false) {
+        final response = launchDetails?.notificationResponse;
+        if (response != null) {
+          print('NOTIFICATION_SERVICE: App launched by notification, actionId=${response.actionId}, payload=${response.payload}');
+          _handleAction(response);
+        }
+      }
     } catch (e) {
       print('NOTIFICATION_SERVICE: [INIT_ERROR] $e');
       // Mark initialized so we don't keep crashing on every call
@@ -286,6 +320,12 @@ class NotificationService {
       await _turnOnBluetooth();
     } else if (details.payload == 'ongoing') {
       _ongoingTapCallback?.call();
+    }
+
+    if (_onNotificationTapCallback != null) {
+      _onNotificationTapCallback!(details);
+    } else {
+      _pendingResponse = details;
     }
   }
 

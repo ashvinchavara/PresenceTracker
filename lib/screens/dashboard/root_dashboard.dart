@@ -24,6 +24,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../../services/notification_service.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 
 class RootDashboard extends StatefulWidget {
@@ -48,6 +49,7 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
   String _meshTaskId = '';
   Map<String, Map<String, int>> _rootAggregatedData = {};
   Map<String, dynamic>? _currentAlarm;
+  Map<String, dynamic>? _absentAlarm;
   List<String> _leaveTaskIds = [];
   Timer? _uiSyncTimer;
   StreamSubscription<BluetoothAdapterState>? _btStateSubscription;
@@ -98,7 +100,153 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
       notifService.setOngoingTapCallback(() {
         if (mounted) _showActiveMeshDetails();
       });
+      notifService.setNotificationTapCallback((response) {
+        if (mounted) {
+          _handleNotificationResponse(response);
+        }
+      });
     });
+  }
+
+  void _handleNotificationResponse(NotificationResponse response) async {
+    final payload = response.payload;
+    final actionId = response.actionId;
+    print('Dashboard: Handling notification response: actionId=$actionId, payload=$payload');
+
+    if (actionId == 'enable_bluetooth' || payload == 'bt_off') {
+      try {
+        await FlutterBluePlus.turnOn();
+      } catch (e) {
+        print('Dashboard: Error enabling Bluetooth from notification: $e');
+      }
+    } else if (payload == 'ongoing') {
+      _showActiveMeshDetails();
+    } else if (payload == 'mismatch') {
+      _showMismatchDetailsDialog();
+    }
+  }
+
+  void _showMismatchDetailsDialog() async {
+    final prefs = await SharedPreferences.getInstance();
+    final mismatchJson = prefs.getString('mismatch_details');
+    if (mismatchJson == null) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("Attendance Verification"),
+          content: const Text("No mismatch details found or they have been resolved."),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK")),
+          ],
+        ),
+      );
+      return;
+    }
+
+    List<dynamic> details = [];
+    try {
+      details = jsonDecode(mismatchJson);
+    } catch (_) {}
+
+    if (details.isEmpty) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("Attendance Verification"),
+          content: const Text("No mismatch details found."),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK")),
+          ],
+        ),
+      );
+      return;
+    }
+
+    int currentIndex = 0;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            final item = details[currentIndex];
+            final String name = item['full_name'] ?? 'Unknown User';
+            final String userId = item['user_id'] ?? 'Unknown ID';
+            final String type = item['type'] ?? 'missing';
+            final String reason = item['detail'] ?? '';
+
+            return AlertDialog(
+              title: Row(
+                children: [
+                  Icon(
+                    type == 'missing' ? Icons.person_off : Icons.history_toggle_off,
+                    color: Colors.red,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      type == 'missing' ? "Missing Record" : "Stale Record",
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    "ID: $userId",
+                    style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color),
+                  ),
+                  const SizedBox(height: 15),
+                  Text(
+                    reason,
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    "Item ${currentIndex + 1} of ${details.length}",
+                    style: TextStyle(fontSize: 12, color: Theme.of(context).textTheme.bodySmall?.color),
+                  ),
+                ],
+              ),
+              actions: [
+                if (currentIndex > 0)
+                  TextButton(
+                    onPressed: () {
+                      setState(() {
+                        currentIndex--;
+                      });
+                    },
+                    child: const Text("Previous"),
+                  ),
+                if (currentIndex < details.length - 1)
+                  ElevatedButton(
+                    onPressed: () {
+                      setState(() {
+                        currentIndex++;
+                      });
+                    },
+                    child: const Text("Next"),
+                  )
+                else
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                    },
+                    child: const Text("Close"),
+                  ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   void _initForegroundService() {
@@ -789,7 +937,7 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
                             foregroundColor: Colors.white,
                           ),
                           icon: const Icon(Icons.refresh),
-                          label: const Text('Restart'),
+                          label: const Text('Restart Tracking'),
                         );
                       } else {
                         return OutlinedButton.icon(
@@ -799,7 +947,7 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
                             foregroundColor: Colors.red,
                           ),
                           icon: const Icon(Icons.cancel),
-                          label: const Text('Leave'),
+                          label: const Text('Mark as Absent'),
                         );
                       }
                     },
@@ -1004,7 +1152,7 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
     
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("${task['activity_name'] ?? 'Session'} marked as Leave.")),
+      SnackBar(content: Text("${task['activity_name'] ?? 'Session'} marked as Absent.")),
     );
     Navigator.pop(context);
   }
@@ -1623,7 +1771,7 @@ class _RootDashboardState extends State<RootDashboard> with WidgetsBindingObserv
                   if (isLeave || isActive || isTargeted) ...[
                     const SizedBox(height: 4),
                     Text(
-                      isLeave ? 'Leave' : (isActive ? 'Session Active' : 'Upcoming'),
+                      isLeave ? 'Absent' : (isActive ? 'Session Active' : 'Upcoming'),
                       style: TextStyle(
                         color: statusColor,
                         fontWeight: FontWeight.w600,

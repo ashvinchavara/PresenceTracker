@@ -572,24 +572,60 @@ class BleMeshService {
       final api = ApiService();
       final dbAttendance = await api.fetchSessionAttendance(_currentTaskId);
       
-      List<String> missingUsers = [];
+      // Fetch schedule members to get matching user names
+      final membersData = await api.fetchScheduleMembers(int.tryParse(_currentTaskId) ?? 0);
+      final List<dynamic> membersList = membersData != null && membersData['members'] != null 
+          ? membersData['members'] as List<dynamic> 
+          : [];
+
+      List<Map<String, dynamic>> mismatchDetails = [];
+      
       for (var entry in _peers.entries) {
         final id = entry.key;
         final results = dbAttendance.where((u) => u['user_id'].toString() == id);
         final dbUser = results.isNotEmpty ? results.first : null;
         
+        // Find user name
+        String name = 'Unknown User';
+        final matchedMember = membersList.firstWhere(
+          (m) => m['id']?.toString() == id || m['user_id']?.toString() == id, 
+          orElse: () => null
+        );
+        if (matchedMember != null) {
+          name = matchedMember['full_name'] ?? 'Unknown User';
+        } else if (dbUser != null && dbUser['full_name'] != null) {
+          name = dbUser['full_name'];
+        }
+
         if (dbUser == null) {
-          missingUsers.add(id);
+          mismatchDetails.add({
+            'user_id': id,
+            'full_name': name,
+            'type': 'missing',
+            'detail': 'This user is detected locally via BLE, but is completely missing from the cloud attendance records for this session.',
+          });
         } else {
           final dbLast = dbUser['last_seen'] as int? ?? 0;
-          if ((entry.value['last'] - dbLast).abs() > 600) {
-            missingUsers.add(id);
+          final localLast = entry.value['last'] as int? ?? 0;
+          final diff = (localLast - dbLast).abs();
+          if (diff > 600) {
+            final minutes = (diff / 60).round();
+            mismatchDetails.add({
+              'user_id': id,
+              'full_name': name,
+              'type': 'stale',
+              'detail': 'This user has stale cloud attendance: local BLE last saw them $minutes minutes different from the cloud database timestamp ($dbLast vs $localLast).',
+            });
           }
         }
       }
 
-      if (missingUsers.isNotEmpty) {
-        await _notifications.showMismatchAlert(_currentActivityName, missingUsers.length);
+      final prefs = await SharedPreferences.getInstance();
+      if (mismatchDetails.isNotEmpty) {
+        await prefs.setString('mismatch_details', jsonEncode(mismatchDetails));
+        await _notifications.showMismatchAlert(_currentActivityName, mismatchDetails.length);
+      } else {
+        await prefs.remove('mismatch_details');
       }
     } catch (_) {}
   }
